@@ -1,0 +1,125 @@
+name: Benchmark Scripts CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  test-and-sonar:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Wajib untuk SonarCloud
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov ruff
+
+      - name: Lint with Ruff
+        run: |
+          ruff check .
+
+      - name: Run tests and generate coverage
+        run: |
+          # Asumsi kamu pakai pytest untuk mengetes tool evaluasi kamu
+          pytest --cov=. --cov-report=xml --cov-report=json -v
+          test -f coverage.xml
+          ls -la
+
+      - name: Calculate and set coverage env var
+        run: |
+          # Mengambil persentase coverage langsung dari pytest-cov json output
+          COVERAGE_PERCENTAGE=$(python -c "import json; t=json.load(open('coverage.json'))['totals']; print(round((t['covered_lines']/t['num_statements']*100) if t['num_statements'] else 100))")
+          echo "COVERAGE_PERCENTAGE=${COVERAGE_PERCENTAGE}" >> $GITHUB_ENV
+
+      - name: Update coverage badge
+        if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          TARGET_BRANCH="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            TARGET_BRANCH="${GITHUB_HEAD_REF}"
+          fi
+          
+          for attempt in 1 2 3; do
+            git fetch origin "${TARGET_BRANCH}"
+            git checkout -B "${TARGET_BRANCH}" "origin/${TARGET_BRANCH}"
+
+            mkdir -p .github/badges
+            LABEL="coverage"
+            MESSAGE="${COVERAGE_PERCENTAGE}%"
+            SCORE="$COVERAGE_PERCENTAGE"
+            if [ "$SCORE" -lt 0 ]; then SCORE=0; elif [ "$SCORE" -gt 100 ]; then SCORE=100; fi
+            HUE=$(( SCORE * 120 / 100 ))
+            COLOR="hsl(${HUE}, 85%, 40%)"
+
+            LABEL_WIDTH=$(( ${#LABEL} * 6 + 10 ))
+            MESSAGE_WIDTH=$(( ${#MESSAGE} * 7 + 10 ))
+            TOTAL_WIDTH=$(( LABEL_WIDTH + MESSAGE_WIDTH ))
+
+            {
+              printf '<svg xmlns="http://www.w3.org/2000/svg" width="%s" height="20" role="img" aria-label="%s: %s">\n' "${TOTAL_WIDTH}" "${LABEL}" "${MESSAGE}"
+              printf '  <linearGradient id="s" x2="0" y2="100%%">\n'
+              printf '    <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>\n'
+              printf '    <stop offset="1" stop-opacity=".1"/>\n'
+              printf '  </linearGradient>\n'
+              printf '  <clipPath id="r">\n'
+              printf '    <rect width="%s" height="20" rx="3" fill="#fff"/>\n' "${TOTAL_WIDTH}"
+              printf '  </clipPath>\n'
+              printf '  <g clip-path="url(#r)">\n'
+              printf '    <rect width="%s" height="20" fill="#555"/>\n' "${LABEL_WIDTH}"
+              printf '    <rect x="%s" width="%s" height="20" fill="%s"/>\n' "${LABEL_WIDTH}" "${MESSAGE_WIDTH}" "${COLOR}"
+              printf '    <rect width="%s" height="20" fill="url(#s)"/>\n' "${TOTAL_WIDTH}"
+              printf '  </g>\n'
+              printf '  <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">\n'
+              printf '    <text x="%s" y="15" fill="#010101" fill-opacity=".3">%s</text>\n' "$(( LABEL_WIDTH / 2 ))" "${LABEL}"
+              printf '    <text x="%s" y="14">%s</text>\n' "$(( LABEL_WIDTH / 2 ))" "${LABEL}"
+              printf '    <text x="%s" y="15" fill="#010101" fill-opacity=".3">%s</text>\n' "$(( LABEL_WIDTH + MESSAGE_WIDTH / 2 ))" "${MESSAGE}"
+              printf '    <text x="%s" y="14">%s</text>\n' "$(( LABEL_WIDTH + MESSAGE_WIDTH / 2 ))" "${MESSAGE}"
+              printf '  </g>\n'
+              printf '</svg>\n'
+            } > .github/badges/coverage.svg
+
+            if git diff --quiet -- .github/badges/coverage.svg; then exit 0; fi
+
+            git add .github/badges/coverage.svg
+            git commit -m "ci: update coverage badge" || true
+            if git push origin "HEAD:${TARGET_BRANCH}"; then exit 0; fi
+            sleep 2
+          done
+
+      - name: SonarCloud scan
+        uses: SonarSource/sonarqube-scan-action@v7
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: >
+            -Dsonar.host.url=https://sonarcloud.io
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+            -Dsonar.sources=.
+            -Dsonar.tests=.
+            -Dsonar.inclusions=**/*.py
+            -Dsonar.test.inclusions=**/tests/**/*.py,**/tests.py,**/test_*.py,**/*_test.py
+            -Dsonar.python.coverage.reportPaths=coverage.xml
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=300
