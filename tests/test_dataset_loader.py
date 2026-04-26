@@ -129,6 +129,43 @@ def test_load_dataset_rejects_values_that_do_not_match_schema_type(tmp_path):
         load_dataset(dataset_path, schema=DATASET_SCHEMA)
 
 
+def test_load_dataset_supports_wrapped_json_rows_and_normalizes_keys(tmp_path):
+    dataset_path = tmp_path / "benchmark.json"
+    dataset_path.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "id ": 1,
+                        " prompt ": "Summarize invoice INV-001",
+                        "expected ": "Invoice INV-001 total is 1500000",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rows = load_dataset(dataset_path, schema=DATASET_SCHEMA)
+
+    assert rows == [
+        {
+            "id": 1,
+            "prompt": "Summarize invoice INV-001",
+            "expected": "Invoice INV-001 total is 1500000",
+        }
+    ]
+
+
+def test_load_dataset_returns_empty_rows_for_empty_json_wrapper(tmp_path):
+    dataset_path = tmp_path / "benchmark.json"
+    dataset_path.write_text(json.dumps({"rows": []}), encoding="utf-8")
+
+    rows = load_dataset(dataset_path, schema=DATASET_SCHEMA)
+
+    assert rows == []
+
+
 def test_load_dataset_skips_thousands_of_empty_rows_without_crashing(tmp_path):
     dataset_path = tmp_path / "benchmark.csv"
     empty_rows = "\n" * 5_000

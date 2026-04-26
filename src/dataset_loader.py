@@ -158,6 +158,9 @@ def _iter_json_rows(path: Path, schema: Schema) -> RowIterator:
         payload = json.load(file)
 
     records = _json_records_from_payload(payload)
+    if not records:
+        return
+
     first_non_empty_index = _first_non_empty_record_index(records)
     headers = _headers_from_records(records, first_non_empty_index)
     _validate_required_columns(headers, schema)
@@ -168,7 +171,7 @@ def _iter_json_rows(path: Path, schema: Schema) -> RowIterator:
             raise DatasetSchemaError("JSON dataset rows must be objects.")
         if _is_empty_mapping(record):
             continue
-        yield record
+        yield _normalize_row_keys(record)
 
 
 def _json_records_from_payload(payload: Any) -> list[Any]:
@@ -184,8 +187,11 @@ def _json_records_from_payload(payload: Any) -> list[Any]:
         DatasetSchemaError: If the JSON payload cannot represent dataset rows.
     """
     if isinstance(payload, dict):
-        records = payload.get(JSON_ROWS_KEY) or payload.get(JSON_DATA_KEY)
-        return [payload] if records is None else _ensure_json_record_list(records)
+        if JSON_ROWS_KEY in payload:
+            return _ensure_json_record_list(payload[JSON_ROWS_KEY])
+        if JSON_DATA_KEY in payload:
+            return _ensure_json_record_list(payload[JSON_DATA_KEY])
+        return [payload]
 
     return _ensure_json_record_list(payload)
 
@@ -252,6 +258,18 @@ def _headers_from_records(
 
     record = records[first_non_empty_index]
     return [str(header) for header in record.keys()]
+
+
+def _normalize_row_keys(row: Mapping[str, Any]) -> Row:
+    """Normalize row dictionary keys for schema-consistent lookup.
+
+    Args:
+        row: Raw row mapping from a supported dataset source.
+
+    Returns:
+        A row dictionary with stripped string keys.
+    """
+    return {_clean_header(key): value for key, value in row.items()}
 
 
 def _iter_docx_rows(path: Path, schema: Schema) -> RowIterator:
