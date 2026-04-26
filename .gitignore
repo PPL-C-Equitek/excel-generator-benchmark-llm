@@ -47,3 +47,6 @@ pgdata/
 .DS_Store
 
 data/
+like-real.examples/
+synthetic.examples/
+synthetic.examples.lanjutan/
