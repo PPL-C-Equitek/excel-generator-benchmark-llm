@@ -96,3 +96,41 @@ def test_llm_client_retries_once_after_rate_limit_and_returns_generated_text(
     assert result == "Recovered response"
     assert gateway_client.chat.completions.create.call_count == 2
     sleep_mock.assert_called_once_with(2)
+
+
+def test_llm_client_raises_rate_limit_error_when_retries_are_exhausted(
+    mocker,
+    gateway_env,
+):
+    rate_limit_error = _gateway_api_error(openai.RateLimitError, status_code=429)
+    gateway_client = mocker.Mock()
+    gateway_client.chat.completions.create.side_effect = rate_limit_error
+    mocker.patch("openai.OpenAI", return_value=gateway_client)
+    sleep_mock = mocker.patch("time.sleep")
+
+    client = LLMClient(
+        model="benchmark-model",
+        max_retries=0,
+        retry_delay_seconds=2,
+    )
+
+    with pytest.raises(openai.RateLimitError):
+        client.generate_text("Summarize this invoice")
+
+    assert gateway_client.chat.completions.create.call_count == 1
+    sleep_mock.assert_not_called()
+
+
+def test_llm_client_raises_runtime_error_when_no_attempts_are_configured(
+    mocker,
+    gateway_env,
+):
+    gateway_client = mocker.Mock()
+    mocker.patch("openai.OpenAI", return_value=gateway_client)
+
+    client = LLMClient(model="benchmark-model", max_retries=-1)
+
+    with pytest.raises(RuntimeError, match="failed unexpectedly"):
+        client.generate_text("Summarize this invoice")
+
+    gateway_client.chat.completions.create.assert_not_called()
