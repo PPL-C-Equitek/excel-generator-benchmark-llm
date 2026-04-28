@@ -200,3 +200,13 @@ def test_calculate_accuracy_treats_invalid_string_input_as_empty_output():
     score = calculate_accuracy("not valid json", ground_truth)
 
     assert score == pytest.approx(0.0)
+
+
+def test_calculate_accuracy_treats_non_dict_non_string_input_as_empty_output():
+    ground_truth = {
+        "invoice_id": "INV-001",
+    }
+
+    score = calculate_accuracy(["unexpected", "list"], ground_truth)
+
+    assert score == pytest.approx(0.0)
