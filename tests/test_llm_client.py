@@ -121,16 +121,6 @@ def test_llm_client_raises_rate_limit_error_when_retries_are_exhausted(
     sleep_mock.assert_not_called()
 
 
-def test_llm_client_raises_runtime_error_when_no_attempts_are_configured(
-    mocker,
-    gateway_env,
-):
-    gateway_client = mocker.Mock()
-    mocker.patch("openai.OpenAI", return_value=gateway_client)
-
-    client = LLMClient(model="benchmark-model", max_retries=-1)
-
-    with pytest.raises(RuntimeError, match="failed unexpectedly"):
-        client.generate_text("Summarize this invoice")
-
-    gateway_client.chat.completions.create.assert_not_called()
+def test_llm_client_raises_value_error_for_negative_max_retries():
+    with pytest.raises(ValueError, match="max_retries must be >= 0"):
+        LLMClient(model="benchmark-model", max_retries=-1)

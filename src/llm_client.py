@@ -44,8 +44,12 @@ class LLMClient:
             retry_delay_seconds: Delay between rate-limit retries.
 
         Raises:
+            ValueError: If ``max_retries`` is negative.
             openai.OpenAIError: If the underlying SDK fails during client setup.
         """
+        if max_retries < 0:
+            raise ValueError(f"max_retries must be >= 0, got {max_retries}")
+
         self.model = model
         self.max_retries = max_retries
         self.retry_delay_seconds = retry_delay_seconds
@@ -67,7 +71,8 @@ class LLMClient:
             LLMAuthError: If the OpenAI SDK raises an authentication error.
             openai.RateLimitError: If all rate-limit retry attempts are exhausted.
         """
-        for attempt in range(self.max_retries + 1):
+        attempt = 0
+        while True:
             try:
                 response = self._create_completion(prompt)
                 return self._response_text(response)
@@ -77,8 +82,7 @@ class LLMClient:
                 if attempt >= self.max_retries:
                     raise
                 time.sleep(self.retry_delay_seconds)
-
-        raise RuntimeError("LLM generation failed unexpectedly.")
+                attempt += 1
 
     def _create_completion(self, prompt: str) -> Any:
         """Send a prompt to the gateway chat completions endpoint.
