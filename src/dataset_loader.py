@@ -11,7 +11,7 @@ import csv
 import json
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Never
 
 from docx import Document
 
@@ -69,7 +69,7 @@ def load_dataset(path: str | Path, schema: Schema) -> list[Row]:
     return list(_validate_and_cast_rows(rows, schema))
 
 
-def _raise_unsupported_format(extension: str, path: Path) -> None:
+def _raise_unsupported_format(extension: str, path: Path) -> Never:
     """Raise an unsupported-format exception with the accepted extensions.
 
     Args:
