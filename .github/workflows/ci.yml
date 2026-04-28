@@ -3,11 +3,14 @@ name: Benchmark Scripts CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '.github/badges/**'
   pull_request:
     branches: [main]
 
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
   test-and-sonar:
@@ -37,7 +40,7 @@ jobs:
       - name: Run tests and generate coverage
         run: |
           # Asumsi kamu pakai pytest untuk mengetes tool evaluasi kamu
-          pytest --cov=. --cov-report=xml --cov-report=json -v
+          pytest --cov=src --cov-report=xml --cov-report=json -v
           test -f coverage.xml
           ls -la
 
@@ -46,6 +49,23 @@ jobs:
           # Mengambil persentase coverage langsung dari pytest-cov json output
           COVERAGE_PERCENTAGE=$(python -c "import json; t=json.load(open('coverage.json'))['totals']; print(round((t['covered_lines']/t['num_statements']*100) if t['num_statements'] else 100))")
           echo "COVERAGE_PERCENTAGE=${COVERAGE_PERCENTAGE}" >> $GITHUB_ENV
+
+      - name: SonarCloud scan
+        uses: SonarSource/sonarqube-scan-action@v7
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: >
+            -Dsonar.host.url=https://sonarcloud.io
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+            -Dsonar.sources=src
+            -Dsonar.tests=tests
+            -Dsonar.python.version=3.12
+            -Dsonar.python.coverage.reportPaths=coverage.xml
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=300
 
       - name: Update coverage badge
         if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
@@ -58,7 +78,7 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             TARGET_BRANCH="${GITHUB_HEAD_REF}"
           fi
-          
+
           for attempt in 1 2 3; do
             git fetch origin "${TARGET_BRANCH}"
             git checkout -B "${TARGET_BRANCH}" "origin/${TARGET_BRANCH}"
@@ -105,21 +125,3 @@ jobs:
             if git push origin "HEAD:${TARGET_BRANCH}"; then exit 0; fi
             sleep 2
           done
-
-      - name: SonarCloud scan
-        uses: SonarSource/sonarqube-scan-action@v7
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: >
-            -Dsonar.host.url=https://sonarcloud.io
-            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
-            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
-            -Dsonar.sources=.
-            -Dsonar.tests=.
-            -Dsonar.inclusions=**/*.py
-            -Dsonar.test.inclusions=**/tests/**/*.py,**/tests.py,**/test_*.py,**/*_test.py
-            -Dsonar.python.coverage.reportPaths=coverage.xml
-            -Dsonar.qualitygate.wait=true
-            -Dsonar.qualitygate.timeout=300
