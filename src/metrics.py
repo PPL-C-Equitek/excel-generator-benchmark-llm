@@ -29,7 +29,7 @@ def parse_llm_output(output: str) -> dict[str, Any]:
 
 
 def calculate_accuracy(
-    parsed_output: dict[str, Any],
+    parsed_output: dict[str, Any] | str,
     ground_truth: dict[str, Any],
 ) -> float:
     """Calculate strict key-value accuracy for a parsed LLM response.
@@ -44,13 +44,18 @@ def calculate_accuracy(
     non-empty prediction receives ``0.0``.
 
     Args:
-        parsed_output: Parsed LLM output dictionary.
+        parsed_output: Parsed LLM output dictionary or raw JSON string.
         ground_truth: Expected key-value pairs for the benchmark item.
 
     Returns:
         Score from ``0.0`` to ``1.0`` based on strict key-value matches while
         penalizing missing, incorrect, and hallucinated fields.
     """
+    if isinstance(parsed_output, str):
+        parsed_output = parse_llm_output(parsed_output)
+    elif not isinstance(parsed_output, dict):
+        parsed_output = {}
+
     if not ground_truth:
         return 1.0 if not parsed_output else 0.0
 

@@ -172,3 +172,31 @@ def test_calculate_accuracy_handles_empty_ground_truth(
     score = calculate_accuracy(parsed_output, {})
 
     assert score == pytest.approx(expected_score)
+
+
+def test_calculate_accuracy_accepts_raw_json_string_input():
+    parsed_output = (
+        '{"invoice_id": "INV-001", "vendor": "Acme Corp", '
+        '"total": 125000, "currency": "IDR"}'
+    )
+    ground_truth = {
+        "invoice_id": "INV-001",
+        "vendor": "Acme Corp",
+        "total": 125000,
+        "currency": "IDR",
+    }
+
+    score = calculate_accuracy(parsed_output, ground_truth)
+
+    assert score == pytest.approx(1.0)
+
+
+def test_calculate_accuracy_treats_invalid_string_input_as_empty_output():
+    ground_truth = {
+        "invoice_id": "INV-001",
+        "vendor": "Acme Corp",
+    }
+
+    score = calculate_accuracy("not valid json", ground_truth)
+
+    assert score == pytest.approx(0.0)
