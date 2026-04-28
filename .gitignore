@@ -50,3 +50,8 @@ data/
 like-real.examples/
 synthetic.examples/
 synthetic.examples.lanjutan/
+*pytest*
+!pytest.ini
+!.env.example
+*__pycache__/
+.ruff*
