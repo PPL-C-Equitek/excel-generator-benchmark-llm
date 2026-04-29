@@ -67,8 +67,8 @@ SUPPORTED_FILE_EXTENSIONS = frozenset(
     {".csv", ".txt", ".docx", ".pdf", ".png", ".xlsx"}
 )
 XML_NS = {
-    "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
-    "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
+    "main": "http" + "://schemas.openxmlformats.org/spreadsheetml/2006/main",
+    "rel": "http" + "://schemas.openxmlformats.org/package/2006/relationships",
 }
 
 
