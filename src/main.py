@@ -39,7 +39,7 @@ DEFAULT_EXAMPLE_DIRS = (
     "like-real.examples",
 )
 DEFAULT_DATA_DIR = "data"
-DEFAULT_REPORT_DIR = "benchmark_reports"
+DEFAULT_REPORT_DIR = f"{DEFAULT_DATA_DIR}/benchmark_reports"
 DEFAULT_RUNTIME_DATASET_DIR = f"{DEFAULT_DATA_DIR}/benchmark_runtime_datasets"
 OVERALL_REPORT_FILENAME = "overall_benchmark_report.csv"
 CSV_ENCODING = "utf-8-sig"
@@ -141,8 +141,8 @@ def main() -> int:
     model_names = _model_names_from_env()
     example_dirs = _example_dirs_from_env()
     data_dir = _project_path(DEFAULT_DATA_DIR)
-    report_dir = _project_path_from_env("REPORT_DIR", DEFAULT_REPORT_DIR)
-    runtime_dataset_dir = _project_path_from_env(
+    report_dir = _project_output_path_from_env("REPORT_DIR", DEFAULT_REPORT_DIR)
+    runtime_dataset_dir = _project_output_path_from_env(
         "BENCHMARK_DATASET_DIR",
         DEFAULT_RUNTIME_DATASET_DIR,
     )
@@ -165,8 +165,10 @@ def main() -> int:
         print("Skipped files")
         print("-------------")
         for skipped_case in skipped_cases:
-            relative_path = skipped_case.input_path.relative_to(PROJECT_ROOT)
-            print(f"- {relative_path}: {skipped_case.reason}")
+            print(
+                f"- {_display_path(skipped_case.input_path)}: "
+                f"{skipped_case.reason}"
+            )
         print("")
 
     batch_results = _run_batch(
@@ -232,6 +234,25 @@ def _project_path_from_env(env_name: str, default: str) -> Path:
     return _project_path(os.getenv(env_name, default))
 
 
+def _project_output_path_from_env(env_name: str, default: str) -> Path:
+    """Resolve and validate an output directory from an environment variable.
+
+    Args:
+        env_name: Environment variable name.
+        default: Default project-relative path.
+
+    Returns:
+        Resolved output directory path under ``PROJECT_ROOT``.
+
+    Raises:
+        ValueError: If the configured path escapes ``PROJECT_ROOT``.
+    """
+    return _ensure_project_child(
+        _project_path_from_env(env_name, default),
+        env_name,
+    )
+
+
 def _project_path(raw_path: str | Path) -> Path:
     """Resolve a path relative to the project root.
 
@@ -246,6 +267,29 @@ def _project_path(raw_path: str | Path) -> Path:
         return path
 
     return PROJECT_ROOT / path
+
+
+def _ensure_project_child(path: Path, label: str) -> Path:
+    """Validate that a path remains inside the project root.
+
+    Args:
+        path: Candidate path.
+        label: Human-readable source label for error messages.
+
+    Returns:
+        Resolved path under ``PROJECT_ROOT``.
+
+    Raises:
+        ValueError: If ``path`` resolves outside ``PROJECT_ROOT``.
+    """
+    project_root = PROJECT_ROOT.resolve()
+    resolved_path = path.resolve()
+    if not resolved_path.is_relative_to(project_root):
+        raise ValueError(
+            f"{label} must stay inside the project directory: {resolved_path}"
+        )
+
+    return resolved_path
 
 
 def _discover_example_cases(
@@ -395,10 +439,11 @@ def _run_single_case(
         Batch summary row.
     """
     safe_model_name = _safe_filename(model_name)
-    runtime_dataset_path = (
-        runtime_dataset_dir / f"{safe_model_name}__{example_case.case_id}.json"
+    safe_case_id = _safe_filename(example_case.case_id)
+    report_path = _safe_output_path(
+        report_dir,
+        f"{safe_model_name}__{safe_case_id}.csv",
     )
-    report_path = report_dir / f"{safe_model_name}__{example_case.case_id}.csv"
     prompt = _build_prompt(
         example_case.input_path,
         extract_text_from_file(example_case.input_path),
@@ -407,7 +452,12 @@ def _run_single_case(
         example_case.input_path,
         example_case.output_path,
     )
-    _write_runtime_dataset(runtime_dataset_path, prompt, expected_output)
+    runtime_dataset_path = _write_runtime_dataset(
+        runtime_dataset_dir,
+        f"{safe_model_name}__{safe_case_id}.json",
+        prompt,
+        expected_output,
+    )
 
     runner = BenchmarkRunner(
         dataset_path=runtime_dataset_path,
@@ -420,12 +470,31 @@ def _run_single_case(
     return {
         "model": model_name,
         "case_id": example_case.case_id,
-        "input_path": str(example_case.input_path.relative_to(PROJECT_ROOT)),
-        "output_path": str(example_case.output_path.relative_to(PROJECT_ROOT)),
-        "report_path": str(report_path.relative_to(PROJECT_ROOT)),
+        "input_path": _display_path(example_case.input_path),
+        "output_path": _display_path(example_case.output_path),
+        "report_path": _display_path(report_path),
         "elapsed_seconds": elapsed_seconds,
         **summary,
     }
+
+
+def _display_path(path: Path) -> str:
+    """Format a path relative to the project when possible.
+
+    Args:
+        path: Path to format for display.
+
+    Returns:
+        Project-relative path when ``path`` is under ``PROJECT_ROOT``,
+        otherwise the original path string.
+    """
+    try:
+        return str(path.relative_to(PROJECT_ROOT))
+    except ValueError:
+        try:
+            return os.path.relpath(path, PROJECT_ROOT)
+        except ValueError:
+            return str(path)
 
 
 def _safe_filename(value: str) -> str:
@@ -437,7 +506,29 @@ def _safe_filename(value: str) -> str:
     Returns:
         Filesystem-safe value.
     """
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_")
+    safe_value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._")
+    return safe_value or "unnamed"
+
+
+def _safe_output_path(base_dir: Path, filename: str) -> Path:
+    """Build a validated child path for generated benchmark artifacts.
+
+    Args:
+        base_dir: Controlled output directory.
+        filename: Requested filename segment.
+
+    Returns:
+        Resolved path guaranteed to stay inside ``base_dir``.
+
+    Raises:
+        ValueError: If the resolved path escapes ``base_dir``.
+    """
+    resolved_base_dir = _ensure_project_child(base_dir, "output directory")
+    candidate = (resolved_base_dir / _safe_filename(filename)).resolve()
+    if not candidate.is_relative_to(resolved_base_dir):
+        raise ValueError("Generated output path escapes the output directory.")
+
+    return candidate
 
 
 def _read_ground_truth_rows(path: Path) -> list[dict[str, Any]]:
@@ -500,7 +591,7 @@ def _source_type(path: Path) -> str:
         path: Source file path.
 
     Returns:
-        ``PDF`` for document/image inputs, otherwise ``Excel``.
+        ``PDF`` for ``.pdf`` and ``.png`` inputs, otherwise ``Excel``.
     """
     if path.suffix.lower() in {".pdf", ".png"}:
         return "PDF"
@@ -530,17 +621,23 @@ SOURCE:
 
 
 def _write_runtime_dataset(
-    path: Path,
+    directory: Path,
+    filename: str,
     prompt: str,
     expected_output: dict[str, Any],
-) -> None:
+) -> Path:
     """Write a one-row runtime dataset used by ``BenchmarkRunner``.
 
     Args:
-        path: Runtime dataset destination.
+        directory: Controlled runtime dataset directory.
+        filename: Runtime dataset filename.
         prompt: Prompt generated from the source input.
         expected_output: Expected output dictionary used for evaluation.
+
+    Returns:
+        Written runtime dataset path.
     """
+    path = _safe_output_path(directory, filename)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "rows": [
@@ -554,6 +651,7 @@ def _write_runtime_dataset(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding=JSON_ENCODING,
     )
+    return path
 
 
 def _write_overall_report(
@@ -572,7 +670,7 @@ def _write_overall_report(
     Returns:
         Path to the written aggregate CSV report.
     """
-    report_path = report_dir / OVERALL_REPORT_FILENAME
+    report_path = _safe_output_path(report_dir, OVERALL_REPORT_FILENAME)
     rows = [
         *_case_comparison_rows(batch_results),
         *_model_summary_rows(batch_results),

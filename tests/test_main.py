@@ -126,6 +126,50 @@ def test_run_single_case_writes_runtime_dataset_and_invokes_runner(
     }
 
 
+def test_project_output_path_from_env_rejects_path_traversal(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setenv("REPORT_DIR", "../poc_outside_reports")
+
+    with pytest.raises(ValueError, match="REPORT_DIR must stay inside"):
+        main_module._project_output_path_from_env(
+            "REPORT_DIR",
+            main_module.DEFAULT_REPORT_DIR,
+        )
+
+
+def test_safe_output_path_sanitizes_user_controlled_filename(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    output_dir = tmp_path / "reports"
+
+    safe_path = main_module._safe_output_path(output_dir, "../..//evil.json")
+
+    assert safe_path == output_dir.resolve() / "evil.json"
+    assert safe_path.is_relative_to(output_dir.resolve())
+    assert main_module._safe_filename("..") == "unnamed"
+
+
+def test_safe_output_path_rejects_paths_that_escape_base_dir(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    output_dir = tmp_path / "reports"
+    monkeypatch.setattr(
+        main_module,
+        "_safe_filename",
+        lambda value: "../evil.json",
+    )
+
+    with pytest.raises(ValueError, match="escapes the output directory"):
+        main_module._safe_output_path(output_dir, "evil.json")
+
+
 def test_main_runs_configured_models_and_example_dirs(
     tmp_path,
     monkeypatch,
@@ -170,7 +214,8 @@ def test_main_runs_configured_models_and_example_dirs(
     assert (tmp_path / "reports" / "overall_benchmark_report.csv").is_file()
 
 
-def test_write_overall_report_compares_files_and_models(tmp_path):
+def test_write_overall_report_compares_files_and_models(tmp_path, monkeypatch):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
     batch_results = [
         {
             "model": "model-a",
@@ -254,6 +299,22 @@ def test_default_env_helpers_and_path_resolution(tmp_path, monkeypatch):
         tmp_path / example_dir for example_dir in main_module.DEFAULT_EXAMPLE_DIRS
     ]
     assert absolute_path == tmp_path / "already-absolute"
+    assert main_module.DEFAULT_REPORT_DIR == "data/benchmark_reports"
+
+
+def test_display_path_prefers_project_relative_and_falls_back_to_absolute(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+
+    inside_project = tmp_path / "nested" / "file.csv"
+    outside_project = Path("D:/external/file.csv")
+
+    assert main_module._display_path(inside_project) == str(
+        Path("nested") / "file.csv"
+    )
+    assert main_module._display_path(outside_project) == str(outside_project)
 
 
 def test_source_type_handles_pdf_and_excel_labels():

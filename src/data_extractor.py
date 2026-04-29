@@ -47,17 +47,17 @@ class _MissingTesseract:
 
 try:
     import pdfplumber
-except ImportError:
+except ImportError:  # pragma: no cover
     pdfplumber = _MissingPdfPlumber()
 
 try:
     from PIL import Image
-except ImportError:
+except ImportError:  # pragma: no cover
     Image = _MissingImage()
 
 try:
     import pytesseract
-except ImportError:
+except ImportError:  # pragma: no cover
     pytesseract = _MissingTesseract()
 
 

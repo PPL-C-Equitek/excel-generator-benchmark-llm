@@ -268,3 +268,14 @@ def _write_minimal_xlsx_without_shared_strings(path: Path) -> None:
 )
 def test_xlsx_column_index(cell_reference, expected_index):
     assert _xlsx_column_index(cell_reference) == expected_index
+
+
+def test_missing_extractor_fallbacks_raise_clear_errors():
+    with pytest.raises(ValueError, match="pdfplumber is required"):
+        data_extractor._MissingPdfPlumber.open(Path("/no/such.pdf"))
+
+    with pytest.raises(ValueError, match="Pillow is required"):
+        data_extractor._MissingImage.open(Path("/no/such.png"))
+
+    with pytest.raises(RuntimeError, match="pytesseract is required"):
+        data_extractor._MissingTesseract.image_to_string(object())
