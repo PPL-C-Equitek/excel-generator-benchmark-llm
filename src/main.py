@@ -647,10 +647,8 @@ def _write_runtime_dataset(
             }
         ]
     }
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding=JSON_ENCODING,
-    )
+    with path.open("w", encoding=JSON_ENCODING) as dataset_file:
+        json.dump(payload, dataset_file, ensure_ascii=False, indent=2)
     return path
 
 
