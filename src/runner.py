@@ -53,15 +53,15 @@ class BenchmarkRunner:
         """Execute the benchmark pipeline and return summary statistics.
 
         Returns:
-            Summary dictionary containing status, total rows, successful
-            evaluations, average score, and an error message when the run is
-            aborted safely.
+            Summary dictionary with exactly ``status``, ``total_rows``,
+            ``successful_evaluations``, and ``average_score`` keys.
         """
         rows = load_dataset(self.dataset_path, self.schema)
-        total_rows = len(rows)
+        total_rows = 0
         scores: list[float] = []
 
         for row in rows:
+            total_rows += 1
             prompt = str(row[PROMPT_KEY])
             ground_truth = _ground_truth_from_row(row)
 
@@ -70,10 +70,9 @@ class BenchmarkRunner:
             except LLMAuthError as exc:
                 print(str(exc))
                 return _summary(
-                    status="failed",
+                    status="aborted_due_to_auth",
                     total_rows=total_rows,
                     scores=scores,
-                    error=str(exc),
                 )
 
             parsed_output = parse_llm_output(raw_output)
@@ -112,18 +111,16 @@ def _summary(
     status: str,
     total_rows: int,
     scores: list[float],
-    error: str | None = None,
 ) -> dict[str, Any]:
     """Build a benchmark summary dictionary.
 
     Args:
         status: Final benchmark run status.
-        total_rows: Number of rows loaded from the dataset.
+        total_rows: Number of dataset rows evaluated or attempted.
         scores: Scores collected from successful evaluations.
-        error: Optional error message for failed runs.
 
     Returns:
-        Summary dictionary consumed by tests and CLI callers.
+        Summary dictionary containing exactly the public runner summary keys.
     """
     successful_evaluations = len(scores)
     average_score = sum(scores) / successful_evaluations if scores else 0.0
@@ -133,8 +130,4 @@ def _summary(
         "successful_evaluations": successful_evaluations,
         "average_score": average_score,
     }
-
-    if error is not None:
-        result["error"] = error
-
     return result

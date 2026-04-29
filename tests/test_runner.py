@@ -4,6 +4,14 @@ from src.llm_client import LLMAuthError
 from src.runner import BenchmarkRunner
 
 
+EXPECTED_SUMMARY_KEYS = {
+    "status",
+    "total_rows",
+    "successful_evaluations",
+    "average_score",
+}
+
+
 def test_benchmark_runner_returns_average_score_for_successful_pipeline(
     mocker,
 ):
@@ -43,6 +51,7 @@ def test_benchmark_runner_returns_average_score_for_successful_pipeline(
     )
     summary = runner.run()
 
+    assert set(summary) == EXPECTED_SUMMARY_KEYS
     assert summary == {
         "status": "completed",
         "total_rows": 2,
@@ -104,11 +113,32 @@ def test_benchmark_runner_aborts_safely_when_authentication_fails(
     captured = capsys.readouterr()
 
     assert summary == {
-        "status": "failed",
-        "total_rows": 3,
+        "status": "aborted_due_to_auth",
+        "total_rows": 2,
         "successful_evaluations": 1,
         "average_score": pytest.approx(1.0),
-        "error": "Invalid LLM API credentials",
     }
+    assert set(summary) == EXPECTED_SUMMARY_KEYS
     assert "Invalid LLM API credentials" in captured.out
     assert llm_client.generate_text.call_count == 2
+
+
+def test_benchmark_runner_returns_zero_average_for_empty_dataset(mocker):
+    mocker.patch("src.runner.load_dataset", return_value=[])
+    llm_client = mocker.Mock()
+    mocker.patch("src.runner.LLMClient", return_value=llm_client)
+
+    runner = BenchmarkRunner(
+        dataset_path="empty-benchmark.json",
+        model="benchmark-model",
+    )
+    summary = runner.run()
+
+    assert set(summary) == EXPECTED_SUMMARY_KEYS
+    assert summary == {
+        "status": "completed",
+        "total_rows": 0,
+        "successful_evaluations": 0,
+        "average_score": pytest.approx(0.0),
+    }
+    llm_client.generate_text.assert_not_called()

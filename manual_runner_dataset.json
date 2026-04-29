@@ -1,0 +1,53 @@
+{
+  "rows": [
+    {
+      "prompt": "Convert the source data below into normalized JSON.\n\nReturn ONLY valid JSON. No markdown. No explanation.\n\nExpected shape:\n{\"rows\":[{\"unit\":\"...\",\"item\":\"...\",\"num_type\":\"cost|revenue\",\"status_type\":\"target|actual\",\"value\":123}]}\n\nRules:\n- Use \"cost\" for biaya, pengeluaran, expense, cost.\n- Use \"revenue\" for pendapatan, income, revenue.\n- Use \"target\" for target, anggaran, budget.\n- Use \"actual\" for aktual, realisasi, actual.\n- \"value\" must be an integer, not a string.\n- Preserve source row order where possible.\n\nSOURCE:\nDivisi,Nama Barang,Tipe,Anggaran,Realisasi\nSDM,Seragam Pegawai,Biaya,2000000,1800000\nSDM,Pelatihan,Biaya,5000000,4900000\nSDM,Rekrutmen Online,Pendapatan,1000000,1050000",
+      "expected_output": {
+        "rows": [
+          {
+            "unit": "SDM",
+            "item": "Seragam Pegawai",
+            "num_type": "cost",
+            "status_type": "target",
+            "value": 2000000
+          },
+          {
+            "unit": "SDM",
+            "item": "Seragam Pegawai",
+            "num_type": "cost",
+            "status_type": "actual",
+            "value": 1800000
+          },
+          {
+            "unit": "SDM",
+            "item": "Pelatihan",
+            "num_type": "cost",
+            "status_type": "target",
+            "value": 5000000
+          },
+          {
+            "unit": "SDM",
+            "item": "Pelatihan",
+            "num_type": "cost",
+            "status_type": "actual",
+            "value": 4900000
+          },
+          {
+            "unit": "SDM",
+            "item": "Rekrutmen Online",
+            "num_type": "revenue",
+            "status_type": "target",
+            "value": 1000000
+          },
+          {
+            "unit": "SDM",
+            "item": "Rekrutmen Online",
+            "num_type": "revenue",
+            "status_type": "actual",
+            "value": 1050000
+          }
+        ]
+      }
+    }
+  ]
+}
