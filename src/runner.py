@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from src.dataset_loader import load_dataset
 from src.llm_client import LLMAuthError, LLMClient
@@ -19,8 +19,22 @@ DEFAULT_DATASET_SCHEMA: Mapping[str, type[Any]] = {
 }
 
 
+class BenchmarkSummary(TypedDict):
+    """Public summary schema returned by ``BenchmarkRunner.run``."""
+
+    status: str
+    total_rows: int
+    successful_evaluations: int
+    average_score: float
+
+
 class BenchmarkRunner:
-    """Run a benchmark dataset through an LLM and aggregate scores."""
+    """Orchestrate dataset loading, LLM generation, and metric evaluation.
+
+    ``BenchmarkRunner`` loads a benchmark dataset, sends each row's prompt to
+    the configured LLM model, scores the generated JSON against the row's
+    ground truth, and returns aggregate run statistics.
+    """
 
     def __init__(
         self,
@@ -49,12 +63,17 @@ class BenchmarkRunner:
         self.schema = schema
         self.llm_client = LLMClient(model=selected_model)
 
-    def run(self) -> dict[str, Any]:
+    def run(self) -> BenchmarkSummary:
         """Execute the benchmark pipeline and return summary statistics.
 
         Returns:
-            Summary dictionary with exactly ``status``, ``total_rows``,
-            ``successful_evaluations``, and ``average_score`` keys.
+            A ``BenchmarkSummary`` dictionary with exactly these keys:
+            ``status`` containing the final run state, ``total_rows``
+            containing the number of records evaluated or attempted,
+            ``successful_evaluations`` containing the number of rows processed
+            without exceptions, and ``average_score`` containing the mean score
+            across successful evaluations. Empty datasets return an
+            ``average_score`` of ``0.0``.
         """
         rows = load_dataset(self.dataset_path, self.schema)
         total_rows = 0
@@ -62,11 +81,8 @@ class BenchmarkRunner:
 
         for row in rows:
             total_rows += 1
-            prompt = str(row[PROMPT_KEY])
-            ground_truth = _ground_truth_from_row(row)
-
             try:
-                raw_output = self.llm_client.generate_text(prompt)
+                scores.append(self._evaluate_single_row(row))
             except LLMAuthError as exc:
                 print(str(exc))
                 return _summary(
@@ -75,14 +91,29 @@ class BenchmarkRunner:
                     scores=scores,
                 )
 
-            parsed_output = parse_llm_output(raw_output)
-            scores.append(calculate_accuracy(parsed_output, ground_truth))
-
         return _summary(
             status="completed",
             total_rows=total_rows,
             scores=scores,
         )
+
+    def _evaluate_single_row(self, row: dict[str, Any]) -> float:
+        """Evaluate a single benchmark row.
+
+        Args:
+            row: Dataset row containing a prompt and expected output fields.
+
+        Returns:
+            Accuracy score for the LLM output generated for the row.
+
+        Raises:
+            LLMAuthError: If the LLM client reports invalid credentials.
+        """
+        prompt = str(row[PROMPT_KEY])
+        ground_truth = _ground_truth_from_row(row)
+        raw_output = self.llm_client.generate_text(prompt)
+        parsed_output = parse_llm_output(raw_output)
+        return calculate_accuracy(parsed_output, ground_truth)
 
 
 def _ground_truth_from_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -110,8 +141,8 @@ def _summary(
     *,
     status: str,
     total_rows: int,
-    scores: list[float],
-) -> dict[str, Any]:
+    scores: Sequence[float],
+) -> BenchmarkSummary:
     """Build a benchmark summary dictionary.
 
     Args:
@@ -124,7 +155,7 @@ def _summary(
     """
     successful_evaluations = len(scores)
     average_score = sum(scores) / successful_evaluations if scores else 0.0
-    result: dict[str, Any] = {
+    result: BenchmarkSummary = {
         "status": status,
         "total_rows": total_rows,
         "successful_evaluations": successful_evaluations,
