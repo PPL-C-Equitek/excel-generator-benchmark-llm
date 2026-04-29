@@ -321,6 +321,21 @@ def test_display_path_prefers_project_relative_and_falls_back_to_absolute(
     assert outside_project.name in display
 
 
+def test_display_path_returns_original_path_when_relpath_fails(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        main_module.os.path,
+        "relpath",
+        lambda path, start: (_ for _ in ()).throw(ValueError("drive mismatch")),
+    )
+    outside_project = Path("D:/external/file.csv")
+
+    assert main_module._display_path(outside_project) == str(outside_project)
+
+
 def test_source_type_handles_pdf_and_excel_labels():
     assert main_module._source_type(Path("invoice.pdf")) == "PDF"
     assert main_module._source_type(Path("invoice.png")) == "PDF"
