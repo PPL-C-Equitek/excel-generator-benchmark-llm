@@ -30,6 +30,7 @@ def test_report_generator_initializes_csv_and_appends_rows(tmp_path):
     assert summary == {
         "status": "completed",
         "total_rows": 2,
+        "successful_evaluations": 2,
         "average_score": pytest.approx(0.75),
     }
 
@@ -70,16 +71,19 @@ def test_report_generator_streams_rows_in_append_mode_without_result_cache(
     )
 
     generator.append_row({"row_id": 1, "status": "completed", "score": 1.0})
+    generator.append_row({"row_id": 2, "status": "failed", "score": 0.0})
 
     with report_path.open("r", newline="", encoding="utf-8") as report_file:
         rows_after_first_append = list(csv.DictReader(report_file))
 
-    generator.append_row({"row_id": 2, "status": "completed", "score": 0.5})
-    generator.finalize_report()
+    generator.append_row({"row_id": 3, "status": "completed", "score": 0.5})
+    summary = generator.finalize_report()
 
     assert rows_after_first_append == [
         {"row_id": "1", "status": "completed", "score": "1.0"},
+        {"row_id": "2", "status": "failed", "score": "0.0"},
     ]
+    assert summary["successful_evaluations"] == 2
     assert any(mode.startswith("a") for mode in opened_modes)
     assert not any(
         hasattr(generator, attribute_name)

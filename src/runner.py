@@ -87,7 +87,7 @@ class BenchmarkRunner:
             containing the number of records evaluated or attempted,
             ``successful_evaluations`` containing the number of rows processed
             without exceptions, and ``average_score`` containing the mean score
-            across successful evaluations. Empty datasets return an
+            across all streamed report rows. Empty datasets return an
             ``average_score`` of ``0.0``.
         """
         rows = load_dataset(self.dataset_path, self.schema)

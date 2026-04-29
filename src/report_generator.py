@@ -17,6 +17,8 @@ DEFAULT_FIELDNAMES = [
 ]
 CSV_ENCODING = "utf-8"
 SCORE_FIELD = "score"
+STATUS_FIELD = "status"
+COMPLETED_STATUS = "completed"
 
 
 class EmptyDataError(ValueError):
@@ -67,15 +69,16 @@ class ReportGenerator:
             report_file.flush()
 
         self.total_rows += 1
-        self.successful_evaluations += 1
+        if row_data.get(STATUS_FIELD) == COMPLETED_STATUS:
+            self.successful_evaluations += 1
         self._cumulative_score += float(row_data.get(SCORE_FIELD, 0.0))
 
     def finalize_report(self) -> dict[str, Any]:
         """Finalize the CSV report and return aggregate statistics.
 
         Returns:
-            Summary dictionary containing status, total row count, and average
-            score.
+            Summary dictionary containing status, total row count, successful
+            evaluation count, and average score.
 
         Raises:
             EmptyDataError: If no rows were appended before finalization.
@@ -86,5 +89,6 @@ class ReportGenerator:
         return {
             "status": "completed",
             "total_rows": self.total_rows,
+            "successful_evaluations": self.successful_evaluations,
             "average_score": self._cumulative_score / self.total_rows,
         }

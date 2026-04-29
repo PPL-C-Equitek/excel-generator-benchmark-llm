@@ -1,3 +1,5 @@
+import csv
+
 import pytest
 
 from src.llm_client import LLMAuthError
@@ -364,3 +366,64 @@ def test_benchmark_runner_returns_empty_status_when_report_has_no_data(
     llm_client.generate_text.assert_not_called()
     report_generator.append_row.assert_not_called()
     report_generator.finalize_report.assert_called_once_with()
+
+
+def test_runner_integration_mixed_results(mocker, tmp_path):
+    dataset_rows = [
+        {
+            "prompt": "Extract invoice INV-001",
+            "expected_output": {
+                "invoice_id": "INV-001",
+                "total": 125000,
+            },
+        },
+        {
+            "prompt": "Extract invoice INV-002",
+            "expected_output": {
+                "invoice_id": "INV-002",
+                "total": 75000,
+            },
+        },
+        {
+            "prompt": "Extract invoice INV-003",
+            "expected_output": {
+                "invoice_id": "INV-003",
+                "total": 50000,
+            },
+        },
+    ]
+    report_path = tmp_path / "mixed-results.csv"
+    mocker.patch("src.runner.load_dataset", return_value=dataset_rows)
+    llm_client = mocker.Mock()
+    llm_client.generate_text.side_effect = [
+        '{"invoice_id": "INV-001", "total": 125000}',
+        '{"invoice_id": "INV-002", "total": 99999}',
+        RuntimeError("Provider timed out"),
+    ]
+    mocker.patch("src.runner.LLMClient", return_value=llm_client)
+
+    runner = BenchmarkRunner(
+        dataset_path="benchmark.json",
+        model="benchmark-model",
+        report_path=report_path,
+    )
+    summary = runner.run()
+
+    with report_path.open("r", newline="", encoding="utf-8") as report_file:
+        report_rows = list(csv.DictReader(report_file))
+
+    assert summary == {
+        "status": "completed",
+        "total_rows": 3,
+        "successful_evaluations": 2,
+        "average_score": pytest.approx(0.5),
+    }
+    assert [row["status"] for row in report_rows] == [
+        "completed",
+        "completed",
+        "failed",
+    ]
+    assert [float(row["score"]) for row in report_rows] == pytest.approx(
+        [1.0, 0.5, 0.0]
+    )
+    assert report_rows[2]["error_message"] == "Provider timed out"
