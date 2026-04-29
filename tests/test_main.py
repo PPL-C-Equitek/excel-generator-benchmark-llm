@@ -1,10 +1,8 @@
 import csv
 import json
-import zipfile
 from pathlib import Path
 
 import pytest
-from docx import Document
 
 import src.main as main_module
 
@@ -29,13 +27,13 @@ def test_discover_example_cases_returns_supported_pairs_and_skips_gaps(
     examples_dir.mkdir()
     supported_input = examples_dir / "ex01_input.csv"
     supported_output = examples_dir / "ex01_output.csv"
-    unsupported_input = examples_dir / "ex02_input.pdf"
-    unsupported_output = examples_dir / "ex02_pdf_output.csv"
+    unsupported_input = examples_dir / "ex02_input.gif"
+    unsupported_output = examples_dir / "ex02_gif_output.csv"
     missing_output_input = examples_dir / "ex03_input.txt"
 
     supported_input.write_text("source", encoding="utf-8")
     _write_ground_truth(supported_output)
-    unsupported_input.write_text("pdf bytes", encoding="utf-8")
+    unsupported_input.write_text("unsupported image bytes", encoding="utf-8")
     _write_ground_truth(unsupported_output)
     missing_output_input.write_text("source", encoding="utf-8")
 
@@ -49,7 +47,7 @@ def test_discover_example_cases_returns_supported_pairs_and_skips_gaps(
         )
     ]
     assert [skipped.reason for skipped in skipped_cases] == [
-        "unsupported input format .pdf",
+        "unsupported input format .gif",
         "matching *_output.csv file was not found",
     ]
 
@@ -143,9 +141,9 @@ def test_main_runs_configured_models_and_example_dirs(
     examples_dir.mkdir()
     input_path = examples_dir / "case01_input.txt"
     output_path = examples_dir / "case01_output.csv"
-    skipped_input_path = examples_dir / "case02_input.pdf"
+    skipped_input_path = examples_dir / "case02_input.gif"
     input_path.write_text("plain source text", encoding="utf-8")
-    skipped_input_path.write_text("pdf source", encoding="utf-8")
+    skipped_input_path.write_text("unsupported image source", encoding="utf-8")
     _write_ground_truth(output_path)
     runner_class = mocker.patch("src.main.BenchmarkRunner")
     runner = runner_class.return_value
@@ -165,7 +163,7 @@ def test_main_runs_configured_models_and_example_dirs(
     assert "Models     : model-a, model-b" in captured.out
     assert "Examples   : 1 supported" in captured.out
     assert "Skipped files" in captured.out
-    assert "case02_input.pdf: unsupported input format .pdf" in captured.out
+    assert "case02_input.gif: unsupported input format .gif" in captured.out
     assert "Overall report:" in captured.out
     assert (tmp_path / "reports").is_dir()
     assert (tmp_path / "runtime").is_dir()
@@ -258,80 +256,9 @@ def test_default_env_helpers_and_path_resolution(tmp_path, monkeypatch):
     assert absolute_path == tmp_path / "already-absolute"
 
 
-def test_read_source_text_supports_docx_xlsx_and_rejects_unknown(tmp_path):
-    docx_path = tmp_path / "sample.docx"
-    document = Document()
-    document.add_paragraph("Quarterly budget")
-    table = document.add_table(rows=2, cols=2)
-    table.cell(0, 0).text = "Item"
-    table.cell(0, 1).text = "Value"
-    table.cell(1, 0).text = "Laptop"
-    table.cell(1, 1).text = "15000000"
-    document.save(docx_path)
-
-    xlsx_path = tmp_path / "sample.xlsx"
-    _write_minimal_xlsx_without_shared_strings(xlsx_path)
-
-    assert "Quarterly budget" in main_module._read_source_text(docx_path)
-    assert "Item\tValue" in main_module._read_source_text(docx_path)
-    assert "SHEET: Sheet1" in main_module._read_source_text(xlsx_path)
-
-    with pytest.raises(ValueError, match="Unsupported input format"):
-        main_module._read_source_text(tmp_path / "sample.png")
-
-
-def test_read_xlsx_text_without_shared_strings_handles_inline_and_blank_cells(
-    tmp_path,
-):
-    workbook_path = tmp_path / "inline.xlsx"
-    _write_minimal_xlsx_without_shared_strings(workbook_path)
-
-    extracted_text = main_module._read_xlsx_text(workbook_path)
-
-    assert extracted_text.splitlines() == [
-        "SHEET: Sheet1",
-        "Inline Item\t",
-    ]
-
-
-def _write_minimal_xlsx_without_shared_strings(path: Path) -> None:
-    with zipfile.ZipFile(path, "w") as workbook:
-        workbook.writestr(
-            "xl/workbook.xml",
-            """<?xml version="1.0" encoding="UTF-8"?>
-            <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-              <sheets>
-                <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
-              </sheets>
-            </workbook>""",
-        )
-        workbook.writestr(
-            "xl/_rels/workbook.xml.rels",
-            """<?xml version="1.0" encoding="UTF-8"?>
-            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-              <Relationship Id="rId1"
-                Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
-                Target="worksheets/sheet1.xml"/>
-            </Relationships>""",
-        )
-        workbook.writestr(
-            "xl/worksheets/sheet1.xml",
-            """<?xml version="1.0" encoding="UTF-8"?>
-            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-              <sheetData>
-                <row r="1">
-                  <c r="A1" t="inlineStr"><is><t>Inline Item</t></is></c>
-                  <c r="B1"></c>
-                </row>
-                <row r="2"></row>
-              </sheetData>
-            </worksheet>""",
-        )
-
-
 def test_source_type_handles_pdf_and_excel_labels():
     assert main_module._source_type(Path("invoice.pdf")) == "PDF"
+    assert main_module._source_type(Path("invoice.png")) == "PDF"
     assert main_module._source_type(Path("invoice.xlsx")) == "Excel"
 
 
@@ -343,68 +270,3 @@ def test_overall_helpers_handle_empty_inputs(capsys, tmp_path):
     captured = capsys.readouterr()
 
     assert "No supported benchmark cases were found." in captured.out
-
-
-def test_read_xlsx_text_extracts_shared_strings_and_numbers(tmp_path):
-    workbook_path = tmp_path / "sample.xlsx"
-    with zipfile.ZipFile(workbook_path, "w") as workbook:
-        workbook.writestr(
-            "xl/workbook.xml",
-            """<?xml version="1.0" encoding="UTF-8"?>
-            <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-              <sheets>
-                <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
-              </sheets>
-            </workbook>""",
-        )
-        workbook.writestr(
-            "xl/_rels/workbook.xml.rels",
-            """<?xml version="1.0" encoding="UTF-8"?>
-            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-              <Relationship Id="rId1"
-                Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
-                Target="/xl/worksheets/sheet1.xml"/>
-            </Relationships>""",
-        )
-        workbook.writestr(
-            "xl/sharedStrings.xml",
-            """<?xml version="1.0" encoding="UTF-8"?>
-            <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-              <si><t>Item</t></si>
-              <si><t>Total</t></si>
-              <si><t>Laptop</t></si>
-            </sst>""",
-        )
-        workbook.writestr(
-            "xl/worksheets/sheet1.xml",
-            """<?xml version="1.0" encoding="UTF-8"?>
-            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-              <sheetData>
-                <row r="1">
-                  <c r="A1" t="s"><v>0</v></c>
-                  <c r="B1" t="s"><v>1</v></c>
-                </row>
-                <row r="2">
-                  <c r="A2" t="s"><v>2</v></c>
-                  <c r="B2"><v>15000000</v></c>
-                </row>
-              </sheetData>
-            </worksheet>""",
-        )
-
-    extracted_text = main_module._read_xlsx_text(workbook_path)
-
-    assert extracted_text.splitlines() == [
-        "SHEET: Sheet1",
-        "Item\tTotal",
-        "Laptop\t15000000",
-    ]
-
-
-@pytest.mark.parametrize(
-    ("cell_reference", "expected_index"),
-    [("A1", 1), ("Z9", 26), ("AA12", 27), ("BC99", 55)],
-)
-def test_xlsx_column_index(cell_reference, expected_index):
-    assert main_module._xlsx_column_index(cell_reference) == expected_index

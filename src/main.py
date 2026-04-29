@@ -8,21 +8,22 @@ import os
 import re
 import sys
 import time
-import zipfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from xml.etree import ElementTree
 
 from dotenv import load_dotenv
-from docx import Document
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(PROJECT_ROOT))  # pragma: no cover
 
+from src.data_extractor import (  # noqa: E402
+    SUPPORTED_FILE_EXTENSIONS,
+    extract_text_from_file,
+)
 from src.runner import BenchmarkRunner  # noqa: E402
 
 
@@ -43,7 +44,7 @@ DEFAULT_RUNTIME_DATASET_DIR = f"{DEFAULT_DATA_DIR}/benchmark_runtime_datasets"
 OVERALL_REPORT_FILENAME = "overall_benchmark_report.csv"
 CSV_ENCODING = "utf-8-sig"
 JSON_ENCODING = "utf-8"
-SUPPORTED_INPUT_EXTENSIONS = frozenset({".csv", ".txt", ".docx", ".xlsx"})
+SUPPORTED_INPUT_EXTENSIONS = SUPPORTED_FILE_EXTENSIONS
 REPORT_HEADERS = ["unit", "item", "num_type", "status_type", "value"]
 OVERALL_REPORT_FIELDNAMES = [
     "section",
@@ -58,12 +59,6 @@ OVERALL_REPORT_FIELDNAMES = [
     "total_runs",
     "completed_runs",
 ]
-XML_NS = {
-    "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
-    "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
-    "office_rel": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
-}
-
 SYSTEM_PROMPT = """
 You are a document parsing assistant.
 
@@ -406,7 +401,7 @@ def _run_single_case(
     report_path = report_dir / f"{safe_model_name}__{example_case.case_id}.csv"
     prompt = _build_prompt(
         example_case.input_path,
-        _read_source_text(example_case.input_path),
+        extract_text_from_file(example_case.input_path),
     )
     expected_output = _expected_output_from_ground_truth(
         example_case.input_path,
@@ -443,216 +438,6 @@ def _safe_filename(value: str) -> str:
         Filesystem-safe value.
     """
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_")
-
-
-def _read_source_text(path: Path) -> str:
-    """Read a supported source file into text for an LLM prompt.
-
-    Args:
-        path: Source file path.
-
-    Returns:
-        Text extracted from the source file.
-
-    Raises:
-        ValueError: If the source format is not supported by this CLI.
-    """
-    extension = path.suffix.lower()
-    if extension in {".csv", ".txt"}:
-        return path.read_text(encoding=CSV_ENCODING)
-
-    if extension == ".docx":
-        return _read_docx_text(path)
-
-    if extension == ".xlsx":
-        return _read_xlsx_text(path)
-
-    raise ValueError(f"Unsupported input format for main.py: {extension}.")
-
-
-def _read_docx_text(path: Path) -> str:
-    """Extract paragraph and table text from a DOCX file.
-
-    Args:
-        path: DOCX file path.
-
-    Returns:
-        Plain-text representation of the document.
-    """
-    document = Document(path)
-    chunks = [paragraph.text for paragraph in document.paragraphs if paragraph.text]
-    for table in document.tables:
-        for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells]
-            if any(cells):
-                chunks.append("\t".join(cells))
-
-    return "\n".join(chunks)
-
-
-def _read_xlsx_text(path: Path) -> str:
-    """Extract worksheet text from an XLSX file using the standard library.
-
-    Args:
-        path: XLSX file path.
-
-    Returns:
-        Plain-text representation of workbook sheets.
-    """
-    with zipfile.ZipFile(path) as workbook:
-        shared_strings = _xlsx_shared_strings(workbook)
-        sheets = _xlsx_sheet_paths(workbook)
-        chunks: list[str] = []
-
-        for sheet_name, sheet_path in sheets:
-            chunks.append(f"SHEET: {sheet_name}")
-            chunks.extend(_xlsx_sheet_rows(workbook, sheet_path, shared_strings))
-
-    return "\n".join(chunks)
-
-
-def _xlsx_shared_strings(workbook: zipfile.ZipFile) -> list[str]:
-    """Read XLSX shared strings.
-
-    Args:
-        workbook: Open XLSX zip file.
-
-    Returns:
-        Shared string table values.
-    """
-    if "xl/sharedStrings.xml" not in workbook.namelist():
-        return []
-
-    root = ElementTree.fromstring(workbook.read("xl/sharedStrings.xml"))
-    strings: list[str] = []
-    for item in root.findall("main:si", XML_NS):
-        text_parts = [
-            text_node.text or ""
-            for text_node in item.findall(".//main:t", XML_NS)
-        ]
-        strings.append("".join(text_parts))
-
-    return strings
-
-
-def _xlsx_sheet_paths(workbook: zipfile.ZipFile) -> list[tuple[str, str]]:
-    """Read sheet names and XML paths from an XLSX workbook.
-
-    Args:
-        workbook: Open XLSX zip file.
-
-    Returns:
-        Ordered pairs of sheet name and XML path.
-    """
-    workbook_root = ElementTree.fromstring(workbook.read("xl/workbook.xml"))
-    rel_root = ElementTree.fromstring(
-        workbook.read("xl/_rels/workbook.xml.rels")
-    )
-    relationships = {
-        relationship.attrib["Id"]: relationship.attrib["Target"]
-        for relationship in rel_root.findall("rel:Relationship", XML_NS)
-    }
-    sheets: list[tuple[str, str]] = []
-
-    for sheet in workbook_root.findall("main:sheets/main:sheet", XML_NS):
-        relationship_id = sheet.attrib[
-            "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
-        ]
-        target = relationships[relationship_id].lstrip("/")
-        sheet_path = target if target.startswith("xl/") else f"xl/{target}"
-        sheets.append((sheet.attrib["name"], sheet_path))
-
-    return sheets
-
-
-def _xlsx_sheet_rows(
-    workbook: zipfile.ZipFile,
-    sheet_path: str,
-    shared_strings: list[str],
-) -> list[str]:
-    """Extract tab-separated rows from one XLSX sheet.
-
-    Args:
-        workbook: Open XLSX zip file.
-        sheet_path: XML path for one sheet.
-        shared_strings: Shared string table values.
-
-    Returns:
-        Tab-separated sheet rows.
-    """
-    root = ElementTree.fromstring(workbook.read(sheet_path))
-    rows: list[str] = []
-
-    for row in root.findall(".//main:row", XML_NS):
-        values_by_column: dict[int, str] = {}
-        for cell in row.findall("main:c", XML_NS):
-            column_index = _xlsx_column_index(cell.attrib.get("r", ""))
-            values_by_column[column_index] = _xlsx_cell_value(
-                cell,
-                shared_strings,
-            )
-
-        if not values_by_column:
-            continue
-
-        max_column = max(values_by_column)
-        values = [
-            values_by_column.get(column_index, "")
-            for column_index in range(1, max_column + 1)
-        ]
-        if any(value.strip() for value in values):
-            rows.append("\t".join(values))
-
-    return rows
-
-
-def _xlsx_cell_value(
-    cell: ElementTree.Element,
-    shared_strings: list[str],
-) -> str:
-    """Extract a scalar cell value from XLSX XML.
-
-    Args:
-        cell: XLSX cell XML element.
-        shared_strings: Shared string table values.
-
-    Returns:
-        Cell value as text.
-    """
-    cell_type = cell.attrib.get("t")
-    if cell_type == "inlineStr":
-        return "".join(
-            text_node.text or ""
-            for text_node in cell.findall(".//main:t", XML_NS)
-        )
-
-    value_node = cell.find("main:v", XML_NS)
-    if value_node is None or value_node.text is None:
-        return ""
-
-    if cell_type == "s":
-        return shared_strings[int(value_node.text)]
-
-    return value_node.text
-
-
-def _xlsx_column_index(cell_reference: str) -> int:
-    """Convert an XLSX cell reference into a one-based column index.
-
-    Args:
-        cell_reference: Cell reference such as ``A1`` or ``BC12``.
-
-    Returns:
-        One-based column index.
-    """
-    column_letters = "".join(
-        character for character in cell_reference if character.isalpha()
-    )
-    column_index = 0
-    for character in column_letters:
-        column_index = (column_index * 26) + ord(character.upper()) - 64
-
-    return column_index
 
 
 def _read_ground_truth_rows(path: Path) -> list[dict[str, Any]]:
@@ -715,9 +500,9 @@ def _source_type(path: Path) -> str:
         path: Source file path.
 
     Returns:
-        ``PDF`` for PDF inputs, otherwise ``Excel``.
+        ``PDF`` for document/image inputs, otherwise ``Excel``.
     """
-    if path.suffix.lower() == ".pdf":
+    if path.suffix.lower() in {".pdf", ".png"}:
         return "PDF"
 
     return "Excel"

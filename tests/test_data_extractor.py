@@ -1,9 +1,11 @@
+import zipfile
 from pathlib import Path
 
 import pytest
 from docx import Document
 
-from src.data_extractor import extract_text_from_file
+import src.data_extractor as data_extractor
+from src.data_extractor import _xlsx_column_index, extract_text_from_file
 
 
 def test_extract_text_from_file_reads_csv_and_txt(tmp_path):
@@ -95,8 +97,174 @@ def test_extract_text_from_file_raises_clear_error_when_ocr_is_unavailable(
 
 
 def test_extract_text_from_file_rejects_unsupported_extensions(tmp_path):
-    unsupported_path = tmp_path / "sample.xlsx"
+    unsupported_path = tmp_path / "sample.gif"
     unsupported_path.write_text("unsupported", encoding="utf-8")
 
     with pytest.raises(ValueError, match="Unsupported file format"):
         extract_text_from_file(unsupported_path)
+
+
+def test_extract_text_from_file_requires_pdfplumber_for_pdf(
+    tmp_path,
+    monkeypatch,
+):
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF mocked bytes")
+    monkeypatch.setattr(
+        data_extractor,
+        "pdfplumber",
+        data_extractor._MissingPdfPlumber(),
+    )
+
+    with pytest.raises(ValueError, match="pdfplumber is required"):
+        extract_text_from_file(pdf_path)
+
+
+def test_extract_text_from_file_requires_pillow_for_png(tmp_path, monkeypatch):
+    png_path = tmp_path / "invoice.png"
+    png_path.write_bytes(b"mock image bytes")
+    monkeypatch.setattr(
+        data_extractor,
+        "Image",
+        data_extractor._MissingImage(),
+    )
+
+    with pytest.raises(ValueError, match="Pillow is required"):
+        extract_text_from_file(png_path)
+
+
+def test_extract_text_from_file_requires_pytesseract_for_png(
+    tmp_path,
+    monkeypatch,
+    mocker,
+):
+    png_path = tmp_path / "invoice.png"
+    png_path.write_bytes(b"mock image bytes")
+    monkeypatch.setattr(
+        data_extractor,
+        "Image",
+        mocker.Mock(open=mocker.Mock(return_value=mocker.Mock())),
+    )
+    monkeypatch.setattr(
+        data_extractor,
+        "pytesseract",
+        data_extractor._MissingTesseract(),
+    )
+
+    with pytest.raises(ValueError, match="Tesseract OCR is not available"):
+        extract_text_from_file(png_path)
+
+
+def test_extract_text_from_file_extracts_xlsx_without_shared_strings(tmp_path):
+    workbook_path = tmp_path / "inline.xlsx"
+    _write_minimal_xlsx_without_shared_strings(workbook_path)
+
+    extracted_text = extract_text_from_file(workbook_path)
+
+    assert extracted_text.splitlines() == [
+        "SHEET: Sheet1",
+        "Inline Item\t",
+    ]
+
+
+def test_extract_text_from_file_extracts_xlsx_shared_strings_and_numbers(
+    tmp_path,
+):
+    workbook_path = tmp_path / "sample.xlsx"
+    with zipfile.ZipFile(workbook_path, "w") as workbook:
+        workbook.writestr(
+            "xl/workbook.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+              <sheets>
+                <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
+              </sheets>
+            </workbook>""",
+        )
+        workbook.writestr(
+            "xl/_rels/workbook.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1"
+                Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
+                Target="/xl/worksheets/sheet1.xml"/>
+            </Relationships>""",
+        )
+        workbook.writestr(
+            "xl/sharedStrings.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+              <si><t>Item</t></si>
+              <si><t>Total</t></si>
+              <si><t>Laptop</t></si>
+            </sst>""",
+        )
+        workbook.writestr(
+            "xl/worksheets/sheet1.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+              <sheetData>
+                <row r="1">
+                  <c r="A1" t="s"><v>0</v></c>
+                  <c r="B1" t="s"><v>1</v></c>
+                </row>
+                <row r="2">
+                  <c r="A2" t="s"><v>2</v></c>
+                  <c r="B2"><v>15000000</v></c>
+                </row>
+              </sheetData>
+            </worksheet>""",
+        )
+
+    extracted_text = extract_text_from_file(workbook_path)
+
+    assert extracted_text.splitlines() == [
+        "SHEET: Sheet1",
+        "Item\tTotal",
+        "Laptop\t15000000",
+    ]
+
+
+def _write_minimal_xlsx_without_shared_strings(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as workbook:
+        workbook.writestr(
+            "xl/workbook.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+              <sheets>
+                <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
+              </sheets>
+            </workbook>""",
+        )
+        workbook.writestr(
+            "xl/_rels/workbook.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1"
+                Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
+                Target="worksheets/sheet1.xml"/>
+            </Relationships>""",
+        )
+        workbook.writestr(
+            "xl/worksheets/sheet1.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+              <sheetData>
+                <row r="1">
+                  <c r="A1" t="inlineStr"><is><t>Inline Item</t></is></c>
+                  <c r="B1"></c>
+                </row>
+                <row r="2"></row>
+              </sheetData>
+            </worksheet>""",
+        )
+
+
+@pytest.mark.parametrize(
+    ("cell_reference", "expected_index"),
+    [("A1", 1), ("Z9", 26), ("AA12", 27), ("BC99", 55)],
+)
+def test_xlsx_column_index(cell_reference, expected_index):
+    assert _xlsx_column_index(cell_reference) == expected_index
