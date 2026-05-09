@@ -68,6 +68,9 @@ def test_extract_text_from_file_extracts_png_with_pytesseract(tmp_path, mocker):
     png_path = tmp_path / "invoice.png"
     png_path.write_bytes(b"mock image bytes")
     image = mocker.MagicMock()
+    processed_image = mocker.MagicMock()
+    processed_image.info = {}
+    image.convert.return_value = processed_image
     image_open = mocker.patch(
         "src.data_extractor.Image.open",
         return_value=image,
@@ -80,7 +83,9 @@ def test_extract_text_from_file_extracts_png_with_pytesseract(tmp_path, mocker):
     extracted_text = extract_text_from_file(png_path)
 
     image_open.assert_called_once_with(png_path)
-    image_to_string.assert_called_once_with(image)
+    image.convert.assert_called_once_with("L")
+    assert processed_image.info["dpi"] == (300, 300)
+    image_to_string.assert_called_once_with(processed_image)
     assert extracted_text == "Invoice OCR text"
 
 
@@ -90,13 +95,49 @@ def test_extract_text_from_file_raises_clear_error_when_ocr_is_unavailable(
 ):
     png_path = tmp_path / "invoice.png"
     png_path.write_bytes(b"mock image bytes")
-    mocker.patch("src.data_extractor.Image.open", return_value=mocker.Mock())
+    image = mocker.MagicMock()
+    processed_image = mocker.MagicMock()
+    processed_image.info = {}
+    image.convert.return_value = processed_image
+    mocker.patch("src.data_extractor.Image.open", return_value=image)
     mocker.patch(
         "src.data_extractor.pytesseract.image_to_string",
         side_effect=RuntimeError("tesseract is not installed"),
     )
 
     with pytest.raises(ValueError, match="Tesseract OCR is not available"):
+        extract_text_from_file(png_path)
+
+
+def test_extract_text_from_file_raises_path_hint_for_tesseract_not_found(
+    tmp_path,
+    monkeypatch,
+    mocker,
+):
+    png_path = tmp_path / "invoice.png"
+    png_path.write_bytes(b"mock image bytes")
+    image = mocker.MagicMock()
+    processed_image = mocker.MagicMock()
+    processed_image.info = {}
+    image.convert.return_value = processed_image
+    mocker.patch("src.data_extractor.Image.open", return_value=image)
+
+    class FakeTesseractNotFoundError(Exception):
+        pass
+
+    fake_pytesseract = type(
+        "FakePytesseract",
+        (),
+        {
+            "TesseractNotFoundError": FakeTesseractNotFoundError,
+            "image_to_string": staticmethod(
+                lambda _img: (_ for _ in ()).throw(FakeTesseractNotFoundError())
+            ),
+        },
+    )()
+    monkeypatch.setattr(data_extractor, "pytesseract", fake_pytesseract)
+
+    with pytest.raises(ValueError, match="ensure `tesseract` is on PATH"):
         extract_text_from_file(png_path)
 
 
@@ -157,6 +198,43 @@ def test_extract_text_from_file_requires_pytesseract_for_png(
 
     with pytest.raises(ValueError, match="Tesseract OCR is not available"):
         extract_text_from_file(png_path)
+
+
+def test_preprocess_png_for_ocr_applies_grayscale_and_dpi(mocker):
+    image = mocker.MagicMock()
+    processed = mocker.MagicMock()
+    processed.info = {}
+    image.convert.return_value = processed
+
+    result = data_extractor._preprocess_png_for_ocr(image)
+
+    image.convert.assert_called_once_with("L")
+    assert result is processed
+    assert processed.info["dpi"] == (300, 300)
+
+
+def test_preprocess_png_for_ocr_handles_images_without_convert():
+    class MinimalImage:
+        def __init__(self) -> None:
+            self.info: dict[str, object] = {}
+
+    image = MinimalImage()
+
+    result = data_extractor._preprocess_png_for_ocr(image)
+
+    assert result is image
+    assert result.info["dpi"] == (300, 300)
+
+
+def test_close_image_if_possible_ignores_objects_without_close():
+    data_extractor._close_image_if_possible(object())
+
+
+def test_extractor_registry_contains_all_supported_extensions():
+    registry = data_extractor._extractor_registry()
+
+    assert set(registry) == set(data_extractor.SUPPORTED_FILE_EXTENSIONS)
+    assert registry[".csv"] is data_extractor._extract_text_file
 
 
 def test_extract_text_from_file_extracts_xlsx_without_shared_strings(tmp_path):
@@ -291,3 +369,76 @@ def test_safe_xml_from_bytes_blocks_doctype_and_entity():
 
     with pytest.raises(ValueError, match="Unsafe XML declaration"):
         _safe_xml_from_bytes(b"<!ENTITY xxe SYSTEM 'file:///etc/passwd'><root/>")
+
+
+def test_safe_xml_from_bytes_allows_regular_xml():
+    root = _safe_xml_from_bytes(b"<root><node>ok</node></root>")
+
+    assert root.tag == "root"
+    assert root.find("node").text == "ok"
+
+
+def test_configure_tesseract_binary_uses_valid_custom_env(monkeypatch, tmp_path):
+    custom_binary = tmp_path / "tesseract.exe"
+    custom_binary.write_text("", encoding="utf-8")
+    fake_pytesseract = type(
+        "FakePytesseract",
+        (),
+        {"pytesseract": type("Inner", (), {"tesseract_cmd": ""})()},
+    )()
+    monkeypatch.setattr(data_extractor, "pytesseract", fake_pytesseract)
+    monkeypatch.setattr(
+        data_extractor,
+        "shutil",
+        type("S", (), {"which": staticmethod(lambda _: None)})(),
+    )
+    monkeypatch.setenv("TESSERACT_CMD", str(custom_binary))
+
+    data_extractor._configure_tesseract_binary()
+
+    assert fake_pytesseract.pytesseract.tesseract_cmd == str(custom_binary.resolve())
+
+
+def test_configure_tesseract_binary_ignores_invalid_custom_env(monkeypatch):
+    fake_pytesseract = type(
+        "FakePytesseract",
+        (),
+        {"pytesseract": type("Inner", (), {"tesseract_cmd": "unchanged"})()},
+    )()
+    monkeypatch.setattr(data_extractor, "pytesseract", fake_pytesseract)
+    monkeypatch.setattr(
+        data_extractor,
+        "shutil",
+        type("S", (), {"which": staticmethod(lambda _: None)})(),
+    )
+    monkeypatch.setenv("TESSERACT_CMD", "not-found.exe")
+
+    data_extractor._configure_tesseract_binary()
+
+    assert fake_pytesseract.pytesseract.tesseract_cmd == "unchanged"
+
+
+def test_configure_tesseract_binary_returns_when_pytesseract_missing(monkeypatch):
+    monkeypatch.setattr(data_extractor, "pytesseract", data_extractor._MissingTesseract())
+
+    # Should not raise and should exit early.
+    data_extractor._configure_tesseract_binary()
+
+
+def test_configure_tesseract_binary_returns_when_tesseract_in_path(monkeypatch):
+    fake_pytesseract = type(
+        "FakePytesseract",
+        (),
+        {"pytesseract": type("Inner", (), {"tesseract_cmd": "unchanged"})()},
+    )()
+    monkeypatch.setattr(data_extractor, "pytesseract", fake_pytesseract)
+    monkeypatch.setattr(
+        data_extractor,
+        "shutil",
+        type("S", (), {"which": staticmethod(lambda _: "C:/bin/tesseract.exe")})(),
+    )
+    monkeypatch.delenv("TESSERACT_CMD", raising=False)
+
+    data_extractor._configure_tesseract_binary()
+
+    assert fake_pytesseract.pytesseract.tesseract_cmd == "unchanged"

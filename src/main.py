@@ -911,20 +911,14 @@ def _merge_model_summary_rows(
                 + (float(new_row["average_seconds"]) * new_total_runs)
             ) / merged_total_runs
 
-        merged[model_name] = {
-            "section": "model_summary",
-            "case_id": "",
-            "model": model_name,
-            "best_model": "",
-            "best_score": "",
-            "fastest_model": "",
-            "fastest_seconds": "",
-            "average_score": merged_average_score,
-            "average_seconds": merged_average_seconds,
-            "total_runs": merged_total_runs,
-            "completed_runs": int(base_row["completed_runs"])
+        merged[model_name] = _model_summary_row(
+            model_name=model_name,
+            average_score=merged_average_score,
+            average_seconds=merged_average_seconds,
+            total_runs=merged_total_runs,
+            completed_runs=int(base_row["completed_runs"])
             + int(new_row["completed_runs"]),
-        }
+        )
 
     return merged
 
@@ -934,19 +928,15 @@ def _normalized_case_comparison_row(
     row: dict[str, Any],
 ) -> dict[str, Any]:
     """Normalize a case-comparison row to the overall report schema."""
-    return {
-        "section": "case_comparison",
-        "case_id": case_id,
-        "model": "",
-        "best_model": row.get("best_model", ""),
-        "best_score": float(row.get("best_score", 0.0)),
-        "fastest_model": row.get("fastest_model", ""),
-        "fastest_seconds": float(row.get("fastest_seconds", 0.0)),
-        "average_score": "",
-        "average_seconds": "",
-        "total_runs": int(row.get("total_runs", 0)),
-        "completed_runs": int(row.get("completed_runs", 0)),
-    }
+    return _case_comparison_row(
+        case_id=case_id,
+        best_model=str(row.get("best_model", "")),
+        best_score=float(row.get("best_score", 0.0)),
+        fastest_model=str(row.get("fastest_model", "")),
+        fastest_seconds=float(row.get("fastest_seconds", 0.0)),
+        total_runs=int(row.get("total_runs", 0)),
+        completed_runs=int(row.get("completed_runs", 0)),
+    )
 
 
 def _normalized_model_summary_row(
@@ -954,19 +944,13 @@ def _normalized_model_summary_row(
     row: dict[str, Any],
 ) -> dict[str, Any]:
     """Normalize a model-summary row to the overall report schema."""
-    return {
-        "section": "model_summary",
-        "case_id": "",
-        "model": model_name,
-        "best_model": "",
-        "best_score": "",
-        "fastest_model": "",
-        "fastest_seconds": "",
-        "average_score": float(row.get("average_score", 0.0)),
-        "average_seconds": float(row.get("average_seconds", 0.0)),
-        "total_runs": int(row.get("total_runs", 0)),
-        "completed_runs": int(row.get("completed_runs", 0)),
-    }
+    return _model_summary_row(
+        model_name=model_name,
+        average_score=float(row.get("average_score", 0.0)),
+        average_seconds=float(row.get("average_seconds", 0.0)),
+        total_runs=int(row.get("total_runs", 0)),
+        completed_runs=int(row.get("completed_runs", 0)),
+    )
 
 
 def _winner_rows_from_model_summaries(
@@ -990,34 +974,10 @@ def _winner_rows_from_model_summaries(
             -float(row["average_score"]),
         ),
     )
-    return [
-        {
-            "section": "overall_best_average",
-            "case_id": "",
-            "model": best_average_row["model"],
-            "best_model": "",
-            "best_score": "",
-            "fastest_model": "",
-            "fastest_seconds": "",
-            "average_score": best_average_row["average_score"],
-            "average_seconds": best_average_row["average_seconds"],
-            "total_runs": best_average_row["total_runs"],
-            "completed_runs": best_average_row["completed_runs"],
-        },
-        {
-            "section": "overall_fastest",
-            "case_id": "",
-            "model": fastest_average_row["model"],
-            "best_model": "",
-            "best_score": "",
-            "fastest_model": "",
-            "fastest_seconds": "",
-            "average_score": fastest_average_row["average_score"],
-            "average_seconds": fastest_average_row["average_seconds"],
-            "total_runs": fastest_average_row["total_runs"],
-            "completed_runs": fastest_average_row["completed_runs"],
-        },
-    ]
+    return _overall_winner_rows_from_best_and_fastest(
+        best_average_row,
+        fastest_average_row,
+    )
 
 
 def _write_overall_text_report(
@@ -1259,19 +1219,15 @@ def _case_comparison_rows(
         best_result = _best_score_result(case_results)
         fastest_result = _fastest_result(case_results)
         rows.append(
-            {
-                "section": "case_comparison",
-                "case_id": case_id,
-                "model": "",
-                "best_model": best_result["model"],
-                "best_score": best_result["average_score"],
-                "fastest_model": fastest_result["model"],
-                "fastest_seconds": fastest_result["elapsed_seconds"],
-                "average_score": "",
-                "average_seconds": "",
-                "total_runs": len(case_results),
-                "completed_runs": _completed_run_count(case_results),
-            }
+            _case_comparison_row(
+                case_id=case_id,
+                best_model=str(best_result["model"]),
+                best_score=float(best_result["average_score"]),
+                fastest_model=str(fastest_result["model"]),
+                fastest_seconds=float(fastest_result["elapsed_seconds"]),
+                total_runs=len(case_results),
+                completed_runs=_completed_run_count(case_results),
+            )
         )
 
     return rows
@@ -1291,23 +1247,17 @@ def _model_summary_rows(
     rows: list[dict[str, Any]] = []
     for model_name, model_results in _group_results(batch_results, "model").items():
         rows.append(
-            {
-                "section": "model_summary",
-                "case_id": "",
-                "model": model_name,
-                "best_model": "",
-                "best_score": "",
-                "fastest_model": "",
-                "fastest_seconds": "",
-                "average_score": _average_float(
+            _model_summary_row(
+                model_name=model_name,
+                average_score=_average_float(
                     result["average_score"] for result in model_results
                 ),
-                "average_seconds": _average_float(
+                average_seconds=_average_float(
                     result["elapsed_seconds"] for result in model_results
                 ),
-                "total_runs": len(model_results),
-                "completed_runs": _completed_run_count(model_results),
-            }
+                total_runs=len(model_results),
+                completed_runs=_completed_run_count(model_results),
+            )
         )
 
     return rows
@@ -1342,6 +1292,67 @@ def _overall_winner_rows(
             -float(row["average_score"]),
         ),
     )
+    return _overall_winner_rows_from_best_and_fastest(
+        best_average_row,
+        fastest_average_row,
+    )
+
+
+def _case_comparison_row(
+    *,
+    case_id: str,
+    best_model: str,
+    best_score: float,
+    fastest_model: str,
+    fastest_seconds: float,
+    total_runs: int,
+    completed_runs: int,
+) -> dict[str, Any]:
+    """Build one case-comparison row in overall report schema."""
+    return {
+        "section": "case_comparison",
+        "case_id": case_id,
+        "model": "",
+        "best_model": best_model,
+        "best_score": best_score,
+        "fastest_model": fastest_model,
+        "fastest_seconds": fastest_seconds,
+        "average_score": "",
+        "average_seconds": "",
+        "total_runs": total_runs,
+        "completed_runs": completed_runs,
+    }
+
+
+def _model_summary_row(
+    *,
+    model_name: str,
+    average_score: float,
+    average_seconds: float,
+    total_runs: int,
+    completed_runs: int,
+) -> dict[str, Any]:
+    """Build one model-summary row in overall report schema."""
+    return {
+        "section": "model_summary",
+        "case_id": "",
+        "model": model_name,
+        "best_model": "",
+        "best_score": "",
+        "fastest_model": "",
+        "fastest_seconds": "",
+        "average_score": average_score,
+        "average_seconds": average_seconds,
+        "total_runs": total_runs,
+        "completed_runs": completed_runs,
+    }
+
+
+def _overall_winner_rows_from_best_and_fastest(
+    best_average_row: dict[str, Any],
+    fastest_average_row: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build overall winner rows from best-score and fastest rows."""
     return [
         {
             "section": "overall_best_average",

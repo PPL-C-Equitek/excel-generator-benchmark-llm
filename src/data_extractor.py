@@ -6,6 +6,7 @@ import zipfile
 import os
 import shutil
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 from xml.etree import ElementTree
 
@@ -64,7 +65,6 @@ except ImportError:  # pragma: no cover
 
 
 TEXT_ENCODING = "utf-8-sig"
-TEXT_EXTENSIONS = frozenset({".csv", ".txt"})
 SUPPORTED_FILE_EXTENSIONS = frozenset(
     {".csv", ".txt", ".docx", ".pdf", ".png", ".xlsx"}
 )
@@ -123,23 +123,15 @@ def extract_text_from_file(file_path: str | Path) -> str:
     """
     path = Path(file_path)
     extension = path.suffix.lower()
+    extractor = _extractor_registry().get(extension)
+    if extractor is None:
+        raise ValueError(f"Unsupported file format for extraction: {extension}.")
+    return extractor(path)
 
-    if extension in TEXT_EXTENSIONS:
-        return path.read_text(encoding=TEXT_ENCODING)
 
-    if extension == ".docx":
-        return _extract_docx_text(path)
-
-    if extension == ".pdf":
-        return _extract_pdf_text(path)
-
-    if extension == ".png":
-        return _extract_png_text(path)
-
-    if extension == ".xlsx":
-        return _extract_xlsx_text(path)
-
-    raise ValueError(f"Unsupported file format for extraction: {extension}.")
+def _extract_text_file(path: Path) -> str:
+    """Extract plain text from CSV/TXT files."""
+    return path.read_text(encoding=TEXT_ENCODING)
 
 
 def _extract_docx_text(path: Path) -> str:
@@ -198,17 +190,62 @@ def _extract_png_text(path: Path) -> str:
         ValueError: If OCR extraction cannot run.
     """
     image = Image.open(path)
+    prepared_image = _preprocess_png_for_ocr(image)
     try:
-        return pytesseract.image_to_string(image).strip()
+        return pytesseract.image_to_string(prepared_image).strip()
     except Exception as exc:
+        tesseract_not_found_error = getattr(
+            pytesseract,
+            "TesseractNotFoundError",
+            None,
+        )
+        if (
+            tesseract_not_found_error is not None
+            and isinstance(exc, tesseract_not_found_error)
+        ):
+            raise ValueError(
+                "Tesseract OCR is not available. Install the Tesseract binary "
+                "and ensure `tesseract` is on PATH (or set `TESSERACT_CMD`)."
+            ) from exc
         raise ValueError(
             "Tesseract OCR is not available. Install the Tesseract binary "
             "and the `pytesseract` Python package before extracting PNG text."
         ) from exc
     finally:
-        close_image = getattr(image, "close", None)
-        if callable(close_image):
-            close_image()
+        _close_image_if_possible(prepared_image)
+        if prepared_image is not image:
+            _close_image_if_possible(image)
+
+
+def _preprocess_png_for_ocr(image: Any) -> Any:
+    """Apply lightweight OCR preprocessing (grayscale + DPI hint)."""
+    convert = getattr(image, "convert", None)
+    processed_image = convert("L") if callable(convert) else image
+
+    info = getattr(processed_image, "info", None)
+    if isinstance(info, dict):
+        info.setdefault("dpi", (300, 300))
+
+    return processed_image
+
+
+def _close_image_if_possible(image: Any) -> None:
+    """Close image resources when object exposes a ``close`` method."""
+    close_image = getattr(image, "close", None)
+    if callable(close_image):
+        close_image()
+
+
+def _extractor_registry() -> dict[str, Callable[[Path], str]]:
+    """Return extractor handlers keyed by normalized file extension."""
+    return {
+        ".csv": _extract_text_file,
+        ".txt": _extract_text_file,
+        ".docx": _extract_docx_text,
+        ".pdf": _extract_pdf_text,
+        ".png": _extract_png_text,
+        ".xlsx": _extract_xlsx_text,
+    }
 
 
 def _extract_xlsx_text(path: Path) -> str:

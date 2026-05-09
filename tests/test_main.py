@@ -219,6 +219,38 @@ def test_main_runs_configured_models_and_example_dirs(
     assert (tmp_path / "reports" / "overall_benchmark_report.txt").is_file()
 
 
+def test_main_uses_merge_path_when_merge_base_report_is_set(
+    tmp_path,
+    monkeypatch,
+    mocker,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setenv("MERGE_BASE_OVERALL_REPORT", "data/base_overall.csv")
+    discover_cases = mocker.patch(
+        "src.main._discover_example_cases",
+        return_value=([], []),
+    )
+    run_batch = mocker.patch("src.main._run_batch", return_value=[])
+    write_merged = mocker.patch(
+        "src.main._write_overall_report_with_merge",
+        return_value=tmp_path / "reports" / "overall_benchmark_report.csv",
+    )
+    write_text = mocker.patch(
+        "src.main._write_overall_text_report",
+        return_value=tmp_path / "reports" / "overall_benchmark_report.txt",
+    )
+    print_summary = mocker.patch("src.main._print_batch_summary")
+
+    exit_code = main_module.main()
+
+    assert exit_code == 0
+    discover_cases.assert_called_once()
+    run_batch.assert_called_once()
+    write_merged.assert_called_once()
+    write_text.assert_called_once()
+    print_summary.assert_called_once()
+
+
 def test_run_batch_continues_when_single_case_preprocess_fails(
     tmp_path,
     monkeypatch,
@@ -453,6 +485,13 @@ def test_input_extensions_from_env_rejects_unsupported_extension(monkeypatch):
         main_module._input_extensions_from_env()
 
 
+def test_input_extensions_from_env_rejects_dot_only_token(monkeypatch):
+    monkeypatch.setenv("INPUT_EXTENSIONS", ".")
+
+    with pytest.raises(ValueError, match="invalid extension token"):
+        main_module._input_extensions_from_env()
+
+
 def test_merge_base_overall_report_from_env_rejects_path_traversal(
     tmp_path,
     monkeypatch,
@@ -462,6 +501,26 @@ def test_merge_base_overall_report_from_env_rejects_path_traversal(
 
     with pytest.raises(ValueError, match="MERGE_BASE_OVERALL_REPORT must stay inside"):
         main_module._merge_base_overall_report_from_env()
+
+
+def test_merge_base_overall_report_from_env_none_when_unset(monkeypatch):
+    monkeypatch.delenv("MERGE_BASE_OVERALL_REPORT", raising=False)
+
+    assert main_module._merge_base_overall_report_from_env() is None
+
+
+def test_merge_base_overall_report_from_env_resolves_valid_path(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    path = tmp_path / "reports" / "overall.csv"
+    monkeypatch.setenv(
+        "MERGE_BASE_OVERALL_REPORT",
+        str(path.relative_to(tmp_path)),
+    )
+
+    assert main_module._merge_base_overall_report_from_env() == path
 
 
 def test_write_overall_report_with_merge_combines_previous_and_new_data(
@@ -534,6 +593,186 @@ def test_write_overall_report_with_merge_combines_previous_and_new_data(
     assert float(model_rows["model-a"]["average_score"]) == pytest.approx(0.76)
     assert float(model_rows["model-a"]["average_seconds"]) == pytest.approx(2.8)
     assert int(model_rows["model-a"]["total_runs"]) == 5
+
+
+def test_write_overall_report_with_merge_falls_back_when_base_missing(
+    tmp_path,
+    monkeypatch,
+    mocker,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    report_dir = tmp_path / "reports"
+    report_dir.mkdir()
+    batch_results = []
+    write_overall_report = mocker.spy(main_module, "_write_overall_report")
+
+    merged_path = main_module._write_overall_report_with_merge(
+        batch_results,
+        report_dir,
+        tmp_path / "missing.csv",
+    )
+
+    write_overall_report.assert_called_once_with(batch_results, report_dir)
+    assert merged_path == report_dir / "overall_benchmark_report.csv"
+
+
+def test_merge_model_summary_rows_keeps_base_when_new_missing():
+    base_rows = {
+        "model-a": {
+            "section": "model_summary",
+            "case_id": "",
+            "model": "model-a",
+            "average_score": 0.5,
+            "average_seconds": 10.0,
+            "total_runs": 4,
+            "completed_runs": 4,
+        }
+    }
+
+    merged = main_module._merge_model_summary_rows(base_rows, {})
+
+    assert merged["model-a"]["model"] == "model-a"
+    assert merged["model-a"]["total_runs"] == 4
+
+
+def test_merge_model_summary_rows_handles_zero_total_runs():
+    base_rows = {
+        "model-a": {
+            "section": "model_summary",
+            "case_id": "",
+            "model": "model-a",
+            "average_score": 1.0,
+            "average_seconds": 1.0,
+            "total_runs": 0,
+            "completed_runs": 0,
+        }
+    }
+    new_rows = {
+        "model-a": {
+            "section": "model_summary",
+            "case_id": "",
+            "model": "model-a",
+            "average_score": 1.0,
+            "average_seconds": 1.0,
+            "total_runs": 0,
+            "completed_runs": 0,
+        }
+    }
+
+    merged = main_module._merge_model_summary_rows(base_rows, new_rows)
+
+    assert merged["model-a"]["average_score"] == 0.0
+    assert merged["model-a"]["average_seconds"] == 0.0
+
+
+def test_winner_rows_from_model_summaries_returns_ranked_rows():
+    model_rows = [
+        {
+            "model": "model-a",
+            "average_score": 0.5,
+            "average_seconds": 5.0,
+            "total_runs": 4,
+            "completed_runs": 4,
+        },
+        {
+            "model": "model-b",
+            "average_score": 0.7,
+            "average_seconds": 7.0,
+            "total_runs": 4,
+            "completed_runs": 4,
+        },
+    ]
+
+    winners = main_module._winner_rows_from_model_summaries(model_rows)
+
+    assert winners[0]["section"] == "overall_best_average"
+    assert winners[0]["model"] == "model-b"
+    assert winners[1]["section"] == "overall_fastest"
+    assert winners[1]["model"] == "model-a"
+
+
+def test_winner_rows_from_model_summaries_returns_empty_for_no_models():
+    assert main_module._winner_rows_from_model_summaries([]) == []
+
+
+def test_format_table_expands_column_widths():
+    table = main_module._format_table(
+        ["A", "B"],
+        [["1", "long value"]],
+    )
+
+    assert "+-" in table
+    assert "long value" in table
+    assert table.strip().endswith("+")
+
+
+def test_write_overall_text_report_reads_full_overall_csv(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    report_dir = tmp_path / "reports"
+    report_dir.mkdir()
+    overall_path = report_dir / "overall_benchmark_report.csv"
+    overall_path.write_text(
+        "\n".join(
+            [
+                ",".join(main_module.OVERALL_REPORT_FIELDNAMES),
+                "case_comparison,case-1,,model-a,1.0,model-a,2.0,,,4,4",
+                "model_summary,,model-a,,,,,0.5,3.0,4,4",
+                "overall_best_average,,model-a,,,,,0.5,3.0,4,4",
+                "overall_fastest,,model-a,,,,,0.5,3.0,4,4",
+            ]
+        )
+        + "\n",
+        encoding="utf-8-sig",
+    )
+
+    txt_path = main_module._write_overall_text_report(
+        batch_results=[],
+        report_dir=report_dir,
+        overall_report_path=overall_path,
+    )
+    content = txt_path.read_text(encoding="utf-8")
+
+    assert "case-1" in content
+    assert "model-a" in content
+
+
+def test_write_overall_text_report_handles_empty_overall_sections(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    report_dir = tmp_path / "reports"
+    report_dir.mkdir()
+    overall_path = report_dir / "overall_benchmark_report.csv"
+    overall_path.write_text(
+        ",".join(main_module.OVERALL_REPORT_FIELDNAMES) + "\n",
+        encoding="utf-8-sig",
+    )
+
+    txt_path = main_module._write_overall_text_report(
+        batch_results=[],
+        report_dir=report_dir,
+        overall_report_path=overall_path,
+    )
+    content = txt_path.read_text(encoding="utf-8")
+
+    assert "No case comparison data." in content
+    assert "No model summary data." in content
+    assert "No overall winner data." in content
+
+
+def test_overall_row_extractors_handle_missing_sections():
+    rows = [{"section": "other", "case_id": "x"}]
+
+    assert main_module._case_rows_from_overall_rows(rows) == []
+    assert main_module._model_rows_from_overall_rows(rows) == []
+    assert main_module._winner_rows_from_overall_rows(rows) == []
+    assert main_module._case_rows_from_overall_rows(None) == []
+    assert main_module._model_rows_from_overall_rows(None) == []
+    assert main_module._winner_rows_from_overall_rows(None) == []
 
 
 def test_overall_helpers_handle_empty_inputs(capsys, tmp_path):
