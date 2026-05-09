@@ -42,6 +42,7 @@ DEFAULT_DATA_DIR = "data"
 DEFAULT_REPORT_DIR = f"{DEFAULT_DATA_DIR}/benchmark_reports"
 DEFAULT_RUNTIME_DATASET_DIR = f"{DEFAULT_DATA_DIR}/benchmark_runtime_datasets"
 OVERALL_REPORT_FILENAME = "overall_benchmark_report.csv"
+OVERALL_TEXT_REPORT_FILENAME = "overall_benchmark_report.txt"
 CSV_ENCODING = "utf-8-sig"
 JSON_ENCODING = "utf-8"
 SUPPORTED_INPUT_EXTENSIONS = SUPPORTED_FILE_EXTENSIONS
@@ -140,6 +141,8 @@ def main() -> int:
 
     model_names = _model_names_from_env()
     example_dirs = _example_dirs_from_env()
+    input_extensions = _input_extensions_from_env()
+    merge_base_overall_report = _merge_base_overall_report_from_env()
     data_dir = _project_path(DEFAULT_DATA_DIR)
     report_dir = _project_output_path_from_env("REPORT_DIR", DEFAULT_REPORT_DIR)
     runtime_dataset_dir = _project_output_path_from_env(
@@ -150,12 +153,13 @@ def main() -> int:
     report_dir.mkdir(parents=True, exist_ok=True)
     runtime_dataset_dir.mkdir(parents=True, exist_ok=True)
 
-    cases, skipped_cases = _discover_example_cases(example_dirs)
+    cases, skipped_cases = _discover_example_cases(example_dirs, input_extensions)
 
     print("========================================")
     print("LLM Benchmark Batch Runner")
     print("========================================")
     print(f"Models     : {', '.join(model_names)}")
+    print(f"Extensions : {', '.join(sorted(input_extensions))}")
     print(f"Examples   : {len(cases)} supported")
     print(f"Skipped    : {len(skipped_cases)} unsupported")
     print(f"Report dir : {report_dir}")
@@ -177,8 +181,24 @@ def main() -> int:
         report_dir=report_dir,
         runtime_dataset_dir=runtime_dataset_dir,
     )
-    overall_report_path = _write_overall_report(batch_results, report_dir)
-    _print_batch_summary(batch_results, overall_report_path)
+    if merge_base_overall_report is None:
+        overall_report_path = _write_overall_report(batch_results, report_dir)
+    else:
+        overall_report_path = _write_overall_report_with_merge(
+            batch_results,
+            report_dir,
+            merge_base_overall_report,
+        )
+    overall_text_report_path = _write_overall_text_report(
+        batch_results,
+        report_dir,
+        overall_report_path=overall_report_path,
+    )
+    _print_batch_summary(
+        batch_results,
+        overall_report_path,
+        overall_text_report_path,
+    )
 
     return 0
 
@@ -194,6 +214,52 @@ def _model_names_from_env() -> list[str]:
         return _csv_env_values(raw_model_names)
 
     return list(DEFAULT_MODEL_NAMES)
+
+
+def _input_extensions_from_env() -> set[str]:
+    """Read allowed benchmark input extensions from ``INPUT_EXTENSIONS``.
+
+    Returns:
+        Normalized lowercase extension set (for example ``{".png", ".pdf"}``).
+
+    Raises:
+        ValueError: If an extension token is empty after normalization.
+    """
+    raw_extensions = os.getenv("INPUT_EXTENSIONS")
+    if not raw_extensions:
+        return set(SUPPORTED_INPUT_EXTENSIONS)
+
+    extensions: set[str] = set()
+    for value in _csv_env_values(raw_extensions):
+        normalized_value = value.lower()
+        if not normalized_value.startswith("."):
+            normalized_value = f".{normalized_value}"
+        if normalized_value == ".":
+            raise ValueError("INPUT_EXTENSIONS contains an invalid extension token.")
+        if normalized_value not in SUPPORTED_INPUT_EXTENSIONS:
+            raise ValueError(
+                f"Unsupported extension in INPUT_EXTENSIONS: {normalized_value}"
+            )
+        extensions.add(normalized_value)
+
+    return extensions
+
+
+def _merge_base_overall_report_from_env() -> Path | None:
+    """Read optional base overall report path for merged aggregation.
+
+    Returns:
+        Resolved report path when ``MERGE_BASE_OVERALL_REPORT`` is set,
+        otherwise ``None``.
+    """
+    raw_path = os.getenv("MERGE_BASE_OVERALL_REPORT")
+    if not raw_path:
+        return None
+
+    return _ensure_project_child(
+        _project_path(raw_path),
+        "MERGE_BASE_OVERALL_REPORT",
+    )
 
 
 def _example_dirs_from_env() -> list[Path]:
@@ -294,6 +360,7 @@ def _ensure_project_child(path: Path, label: str) -> Path:
 
 def _discover_example_cases(
     example_dirs: list[Path],
+    input_extensions: set[str],
 ) -> tuple[list[ExampleCase], list[SkippedCase]]:
     """Discover supported input/output pairs in example folders.
 
@@ -308,7 +375,7 @@ def _discover_example_cases(
 
     for example_dir in example_dirs:
         for input_path in sorted(example_dir.glob("*_input.*")):
-            if input_path.suffix.lower() not in SUPPORTED_INPUT_EXTENSIONS:
+            if input_path.suffix.lower() not in input_extensions:
                 skipped_cases.append(
                     SkippedCase(
                         input_path=input_path,
@@ -403,12 +470,21 @@ def _run_batch(
                 f"[{run_index}/{total_runs}] "
                 f"{model_name} -> {example_case.case_id}"
             )
-            result = _run_single_case(
-                example_case=example_case,
-                model_name=model_name,
-                report_dir=report_dir,
-                runtime_dataset_dir=runtime_dataset_dir,
-            )
+            try:
+                result = _run_single_case(
+                    example_case=example_case,
+                    model_name=model_name,
+                    report_dir=report_dir,
+                    runtime_dataset_dir=runtime_dataset_dir,
+                )
+            except Exception as exc:
+                print(f"  warning: {exc}")
+                result = _failed_preprocess_result(
+                    example_case=example_case,
+                    model_name=model_name,
+                    report_dir=report_dir,
+                    error_message=str(exc),
+                )
             batch_results.append(result)
             print(
                 "  "
@@ -418,6 +494,45 @@ def _run_batch(
             )
 
     return batch_results
+
+
+def _failed_preprocess_result(
+    *,
+    example_case: ExampleCase,
+    model_name: str,
+    report_dir: Path,
+    error_message: str,
+) -> dict[str, Any]:
+    """Build a synthetic batch result for cases that fail before runner setup.
+
+    Args:
+        example_case: Example case that failed during preprocessing.
+        model_name: Model that was being evaluated.
+        report_dir: Destination folder for benchmark reports.
+        error_message: Captured preprocessing error.
+
+    Returns:
+        Batch summary row with a failed preprocess status.
+    """
+    safe_model_name = _safe_filename(model_name)
+    safe_case_id = _safe_filename(example_case.case_id)
+    report_path = _safe_output_path(
+        report_dir,
+        f"{safe_model_name}__{safe_case_id}.csv",
+    )
+    return {
+        "model": model_name,
+        "case_id": example_case.case_id,
+        "input_path": _display_path(example_case.input_path),
+        "output_path": _display_path(example_case.output_path),
+        "report_path": _display_path(report_path),
+        "elapsed_seconds": 0.0,
+        "status": "failed_preprocess",
+        "total_rows": 0,
+        "successful_evaluations": 0,
+        "average_score": 0.0,
+        "error_message": error_message,
+    }
 
 
 def _run_single_case(
@@ -683,6 +798,451 @@ def _write_overall_report(
     return report_path
 
 
+def _write_overall_report_with_merge(
+    batch_results: list[dict[str, Any]],
+    report_dir: Path,
+    base_overall_report_path: Path,
+) -> Path:
+    """Write an overall report merged with a previous aggregate report.
+
+    Args:
+        batch_results: Fresh batch result dictionaries.
+        report_dir: Destination report folder.
+        base_overall_report_path: Existing overall report to merge with.
+
+    Returns:
+        Path to the merged overall report.
+    """
+    report_path = _safe_output_path(report_dir, OVERALL_REPORT_FILENAME)
+    if not base_overall_report_path.exists():
+        print(
+            "warning: merge base overall report was not found, "
+            "writing a fresh aggregate report."
+        )
+        return _write_overall_report(batch_results, report_dir)
+
+    base_rows = _read_overall_report_rows(base_overall_report_path)
+    rows = _merge_overall_rows(base_rows, batch_results)
+
+    with report_path.open("w", newline="", encoding=CSV_ENCODING) as file:
+        writer = csv.DictWriter(file, fieldnames=OVERALL_REPORT_FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return report_path
+
+
+def _read_overall_report_rows(path: Path) -> list[dict[str, str]]:
+    """Read an existing overall benchmark report."""
+    with path.open("r", newline="", encoding=CSV_ENCODING) as file:
+        return list(csv.DictReader(file))
+
+
+def _merge_overall_rows(
+    base_rows: list[dict[str, str]],
+    batch_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge previous overall rows with fresh batch results."""
+    base_case_rows = {
+        row["case_id"]: row
+        for row in base_rows
+        if row.get("section") == "case_comparison" and row.get("case_id")
+    }
+    base_model_rows = {
+        row["model"]: row
+        for row in base_rows
+        if row.get("section") == "model_summary" and row.get("model")
+    }
+
+    new_case_rows = {
+        row["case_id"]: row for row in _case_comparison_rows(batch_results)
+    }
+    merged_case_rows = {**base_case_rows, **new_case_rows}
+
+    new_model_rows = {
+        row["model"]: row for row in _model_summary_rows(batch_results)
+    }
+    merged_model_rows = _merge_model_summary_rows(base_model_rows, new_model_rows)
+
+    model_rows_list = [
+        _normalized_model_summary_row(model_name, row)
+        for model_name, row in sorted(merged_model_rows.items())
+    ]
+    winner_rows = _winner_rows_from_model_summaries(model_rows_list)
+
+    combined_rows: list[dict[str, Any]] = []
+    for case_id, row in sorted(merged_case_rows.items()):
+        combined_rows.append(_normalized_case_comparison_row(case_id, row))
+    combined_rows.extend(model_rows_list)
+    combined_rows.extend(winner_rows)
+    return combined_rows
+
+
+def _merge_model_summary_rows(
+    base_rows: dict[str, dict[str, Any]],
+    new_rows: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Merge model summary rows using weighted averages by run count."""
+    merged: dict[str, dict[str, Any]] = {}
+    all_models = set(base_rows) | set(new_rows)
+    for model_name in all_models:
+        base_row = base_rows.get(model_name)
+        new_row = new_rows.get(model_name)
+        if base_row is None:
+            merged[model_name] = dict(new_row or {})
+            continue
+        if new_row is None:
+            merged[model_name] = dict(base_row)
+            continue
+
+        base_total_runs = int(base_row["total_runs"])
+        new_total_runs = int(new_row["total_runs"])
+        merged_total_runs = base_total_runs + new_total_runs
+        if merged_total_runs == 0:
+            merged_average_score = 0.0
+            merged_average_seconds = 0.0
+        else:
+            merged_average_score = (
+                (float(base_row["average_score"]) * base_total_runs)
+                + (float(new_row["average_score"]) * new_total_runs)
+            ) / merged_total_runs
+            merged_average_seconds = (
+                (float(base_row["average_seconds"]) * base_total_runs)
+                + (float(new_row["average_seconds"]) * new_total_runs)
+            ) / merged_total_runs
+
+        merged[model_name] = {
+            "section": "model_summary",
+            "case_id": "",
+            "model": model_name,
+            "best_model": "",
+            "best_score": "",
+            "fastest_model": "",
+            "fastest_seconds": "",
+            "average_score": merged_average_score,
+            "average_seconds": merged_average_seconds,
+            "total_runs": merged_total_runs,
+            "completed_runs": int(base_row["completed_runs"])
+            + int(new_row["completed_runs"]),
+        }
+
+    return merged
+
+
+def _normalized_case_comparison_row(
+    case_id: str,
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize a case-comparison row to the overall report schema."""
+    return {
+        "section": "case_comparison",
+        "case_id": case_id,
+        "model": "",
+        "best_model": row.get("best_model", ""),
+        "best_score": float(row.get("best_score", 0.0)),
+        "fastest_model": row.get("fastest_model", ""),
+        "fastest_seconds": float(row.get("fastest_seconds", 0.0)),
+        "average_score": "",
+        "average_seconds": "",
+        "total_runs": int(row.get("total_runs", 0)),
+        "completed_runs": int(row.get("completed_runs", 0)),
+    }
+
+
+def _normalized_model_summary_row(
+    model_name: str,
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize a model-summary row to the overall report schema."""
+    return {
+        "section": "model_summary",
+        "case_id": "",
+        "model": model_name,
+        "best_model": "",
+        "best_score": "",
+        "fastest_model": "",
+        "fastest_seconds": "",
+        "average_score": float(row.get("average_score", 0.0)),
+        "average_seconds": float(row.get("average_seconds", 0.0)),
+        "total_runs": int(row.get("total_runs", 0)),
+        "completed_runs": int(row.get("completed_runs", 0)),
+    }
+
+
+def _winner_rows_from_model_summaries(
+    model_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build overall winner rows from model-summary rows."""
+    if not model_rows:
+        return []
+
+    best_average_row = max(
+        model_rows,
+        key=lambda row: (
+            float(row["average_score"]),
+            -float(row["average_seconds"]),
+        ),
+    )
+    fastest_average_row = min(
+        model_rows,
+        key=lambda row: (
+            float(row["average_seconds"]),
+            -float(row["average_score"]),
+        ),
+    )
+    return [
+        {
+            "section": "overall_best_average",
+            "case_id": "",
+            "model": best_average_row["model"],
+            "best_model": "",
+            "best_score": "",
+            "fastest_model": "",
+            "fastest_seconds": "",
+            "average_score": best_average_row["average_score"],
+            "average_seconds": best_average_row["average_seconds"],
+            "total_runs": best_average_row["total_runs"],
+            "completed_runs": best_average_row["completed_runs"],
+        },
+        {
+            "section": "overall_fastest",
+            "case_id": "",
+            "model": fastest_average_row["model"],
+            "best_model": "",
+            "best_score": "",
+            "fastest_model": "",
+            "fastest_seconds": "",
+            "average_score": fastest_average_row["average_score"],
+            "average_seconds": fastest_average_row["average_seconds"],
+            "total_runs": fastest_average_row["total_runs"],
+            "completed_runs": fastest_average_row["completed_runs"],
+        },
+    ]
+
+
+def _write_overall_text_report(
+    batch_results: list[dict[str, Any]],
+    report_dir: Path,
+    *,
+    overall_report_path: Path | None = None,
+) -> Path:
+    """Write a human-readable text report with summary tables.
+
+    Args:
+        batch_results: Batch result dictionaries.
+        report_dir: Destination report folder.
+
+    Returns:
+        Path to the written text report.
+    """
+    report_path = _safe_output_path(report_dir, OVERALL_TEXT_REPORT_FILENAME)
+    lines = [
+        "LLM Benchmark Report",
+        "====================",
+        "",
+        "Run Results",
+        "-----------",
+    ]
+
+    if batch_results:
+        run_rows = [
+            [
+                str(result["model"]),
+                str(result["case_id"]),
+                str(result["status"]),
+                f"{float(result['average_score']):.4f}",
+                f"{float(result['elapsed_seconds']):.4f}",
+                f"{int(result['successful_evaluations'])}/"
+                f"{int(result['total_rows'])}",
+            ]
+            for result in batch_results
+        ]
+        lines.append(
+            _format_table(
+                ["Model", "Case", "Status", "Score", "Seconds", "Success"],
+                run_rows,
+            )
+        )
+    else:
+        lines.append("No benchmark runs were executed.")
+
+    overall_rows: list[dict[str, Any]] | None = None
+    if overall_report_path is not None and overall_report_path.exists():
+        overall_rows = _read_overall_report_rows(overall_report_path)
+
+    case_rows = (
+        _case_rows_from_overall_rows(overall_rows)
+        if overall_rows is not None
+        else _case_comparison_rows(batch_results)
+    )
+    lines.extend(["", "Case Comparison", "---------------"])
+    if case_rows:
+        lines.append(
+            _format_table(
+                [
+                    "Case",
+                    "Best Model",
+                    "Best Score",
+                    "Fastest Model",
+                    "Fastest Seconds",
+                    "Completed/Total",
+                ],
+                [
+                    [
+                        str(row.get("case_id", "")),
+                        str(row.get("best_model", "")),
+                        f"{float(row.get('best_score', 0.0)):.4f}",
+                        str(row.get("fastest_model", "")),
+                        f"{float(row.get('fastest_seconds', 0.0)):.4f}",
+                        f"{int(row.get('completed_runs', 0))}/"
+                        f"{int(row.get('total_runs', 0))}",
+                    ]
+                    for row in case_rows
+                ],
+            )
+        )
+    else:
+        lines.append("No case comparison data.")
+
+    model_rows = (
+        _model_rows_from_overall_rows(overall_rows)
+        if overall_rows is not None
+        else _model_summary_rows(batch_results)
+    )
+    lines.extend(["", "Model Summary", "-------------"])
+    if model_rows:
+        lines.append(
+            _format_table(
+                [
+                    "Model",
+                    "Average Score",
+                    "Average Seconds",
+                    "Completed/Total",
+                ],
+                [
+                    [
+                        str(row.get("model", "")),
+                        f"{float(row.get('average_score', 0.0)):.4f}",
+                        f"{float(row.get('average_seconds', 0.0)):.4f}",
+                        f"{int(row.get('completed_runs', 0))}/"
+                        f"{int(row.get('total_runs', 0))}",
+                    ]
+                    for row in model_rows
+                ],
+            )
+        )
+    else:
+        lines.append("No model summary data.")
+
+    winner_rows = (
+        _winner_rows_from_overall_rows(overall_rows)
+        if overall_rows is not None
+        else _overall_winner_rows(batch_results)
+    )
+    lines.extend(["", "Overall Winners", "---------------"])
+    if winner_rows:
+        best_average_row, fastest_row = winner_rows
+        lines.append(
+            _format_table(
+                ["Category", "Model", "Average Score", "Average Seconds"],
+                [
+                    [
+                        "Best average score",
+                        str(best_average_row.get("model", "")),
+                        f"{float(best_average_row.get('average_score', 0.0)):.4f}",
+                        f"{float(best_average_row.get('average_seconds', 0.0)):.4f}",
+                    ],
+                    [
+                        "Fastest average runtime",
+                        str(fastest_row.get("model", "")),
+                        f"{float(fastest_row.get('average_score', 0.0)):.4f}",
+                        f"{float(fastest_row.get('average_seconds', 0.0)):.4f}",
+                    ],
+                ],
+            )
+        )
+    else:
+        lines.append("No overall winner data.")
+
+    report_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    return report_path
+
+
+def _case_rows_from_overall_rows(
+    overall_rows: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Extract case-comparison rows from an overall report payload."""
+    if not overall_rows:
+        return []
+    return [
+        row
+        for row in overall_rows
+        if row.get("section") == "case_comparison"
+    ]
+
+
+def _model_rows_from_overall_rows(
+    overall_rows: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Extract model-summary rows from an overall report payload."""
+    if not overall_rows:
+        return []
+    return [
+        row
+        for row in overall_rows
+        if row.get("section") == "model_summary"
+    ]
+
+
+def _winner_rows_from_overall_rows(
+    overall_rows: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Extract winner rows from an overall report payload."""
+    if not overall_rows:
+        return []
+
+    by_section = {
+        row.get("section", ""): row
+        for row in overall_rows
+        if row.get("section") in {"overall_best_average", "overall_fastest"}
+    }
+    best_average_row = by_section.get("overall_best_average")
+    fastest_row = by_section.get("overall_fastest")
+    if best_average_row is None or fastest_row is None:
+        return []
+    return [best_average_row, fastest_row]
+
+
+def _format_table(headers: list[str], rows: list[list[str]]) -> str:
+    """Render an ASCII table for text reports.
+
+    Args:
+        headers: Header row labels.
+        rows: Body rows as string cells.
+
+    Returns:
+        Formatted table text.
+    """
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, value in enumerate(row):
+            widths[index] = max(widths[index], len(value))
+
+    separator = "+-" + "-+-".join("-" * width for width in widths) + "-+"
+
+    def _format_row(cells: list[str]) -> str:
+        padded = [
+            value.ljust(widths[index])
+            for index, value in enumerate(cells)
+        ]
+        return "| " + " | ".join(padded) + " |"
+
+    table_lines = [separator, _format_row(headers), separator]
+    table_lines.extend(_format_row(row) for row in rows)
+    table_lines.append(separator)
+    return "\n".join(table_lines)
+
+
 def _case_comparison_rows(
     batch_results: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -899,6 +1459,7 @@ def _average_float(values: Iterable[Any]) -> float:
 def _print_batch_summary(
     batch_results: list[dict[str, Any]],
     overall_report_path: Path,
+    overall_text_report_path: Path,
 ) -> None:
     """Print a readable summary table for batch results.
 
@@ -941,6 +1502,7 @@ def _print_batch_summary(
 
     print("")
     print(f"Overall report: {overall_report_path}")
+    print(f"Text report   : {overall_text_report_path}")
 
 
 if __name__ == "__main__":  # pragma: no cover

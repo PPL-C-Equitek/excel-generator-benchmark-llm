@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import zipfile
+import os
+import shutil
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -70,6 +72,39 @@ XML_NS = {
     "main": "http" + "://schemas.openxmlformats.org/spreadsheetml/2006/main",
     "rel": "http" + "://schemas.openxmlformats.org/package/2006/relationships",
 }
+WINDOWS_TESSERACT_CANDIDATES = (
+    Path("C:/Program Files/Tesseract-OCR/tesseract.exe"),
+    Path("C:/Program Files (x86)/Tesseract-OCR/tesseract.exe"),
+)
+DISALLOWED_XML_TOKENS = (b"<!DOCTYPE", b"<!ENTITY")
+
+
+def _configure_tesseract_binary() -> None:
+    """Configure pytesseract binary path for environments without PATH setup."""
+    if isinstance(pytesseract, _MissingTesseract):
+        return
+
+    custom_binary = os.getenv("TESSERACT_CMD")
+    if custom_binary:
+        custom_binary_path = Path(custom_binary.strip()).expanduser().resolve()
+        if (
+            custom_binary_path.exists()
+            and custom_binary_path.is_file()
+            and custom_binary_path.name.lower().startswith("tesseract")
+        ):
+            pytesseract.pytesseract.tesseract_cmd = str(custom_binary_path)
+        return
+
+    if shutil.which("tesseract"):
+        return
+
+    for candidate in WINDOWS_TESSERACT_CANDIDATES:
+        if candidate.exists():
+            pytesseract.pytesseract.tesseract_cmd = str(candidate)
+            return
+
+
+_configure_tesseract_binary()
 
 
 def extract_text_from_file(file_path: str | Path) -> str:
@@ -209,7 +244,7 @@ def _xlsx_shared_strings(workbook: zipfile.ZipFile) -> list[str]:
     if "xl/sharedStrings.xml" not in workbook.namelist():
         return []
 
-    root = ElementTree.fromstring(workbook.read("xl/sharedStrings.xml"))
+    root = _safe_xml_from_bytes(workbook.read("xl/sharedStrings.xml"))
     strings: list[str] = []
     for item in root.findall("main:si", XML_NS):
         text_parts = [
@@ -230,10 +265,8 @@ def _xlsx_sheet_paths(workbook: zipfile.ZipFile) -> list[tuple[str, str]]:
     Returns:
         Ordered pairs of sheet name and XML path.
     """
-    workbook_root = ElementTree.fromstring(workbook.read("xl/workbook.xml"))
-    rel_root = ElementTree.fromstring(
-        workbook.read("xl/_rels/workbook.xml.rels")
-    )
+    workbook_root = _safe_xml_from_bytes(workbook.read("xl/workbook.xml"))
+    rel_root = _safe_xml_from_bytes(workbook.read("xl/_rels/workbook.xml.rels"))
     relationships = {
         relationship.attrib["Id"]: relationship.attrib["Target"]
         for relationship in rel_root.findall("rel:Relationship", XML_NS)
@@ -266,7 +299,7 @@ def _xlsx_sheet_rows(
     Returns:
         Tab-separated sheet rows.
     """
-    root = ElementTree.fromstring(workbook.read(sheet_path))
+    root = _safe_xml_from_bytes(workbook.read(sheet_path))
     rows: list[str] = []
 
     for row in root.findall(".//main:row", XML_NS):
@@ -339,3 +372,21 @@ def _xlsx_column_index(cell_reference: str) -> int:
         column_index = (column_index * 26) + ord(character.upper()) - 64
 
     return column_index
+
+
+def _safe_xml_from_bytes(raw_xml: bytes) -> ElementTree.Element:
+    """Parse XML bytes after blocking unsafe DTD/entity declarations.
+
+    Args:
+        raw_xml: XML bytes loaded from a workbook archive.
+
+    Returns:
+        Parsed XML element root.
+
+    Raises:
+        ValueError: If XML contains disallowed DTD/entity declarations.
+    """
+    upper_raw_xml = raw_xml.upper()
+    if any(token in upper_raw_xml for token in DISALLOWED_XML_TOKENS):
+        raise ValueError("Unsafe XML declaration found in XLSX content.")
+    return ElementTree.fromstring(raw_xml)
