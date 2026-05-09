@@ -37,7 +37,10 @@ def test_discover_example_cases_returns_supported_pairs_and_skips_gaps(
     _write_ground_truth(unsupported_output)
     missing_output_input.write_text("source", encoding="utf-8")
 
-    cases, skipped_cases = main_module._discover_example_cases([examples_dir])
+    cases, skipped_cases = main_module._discover_example_cases(
+        [examples_dir],
+        {".csv", ".txt", ".docx", ".pdf", ".png", ".xlsx"},
+    )
 
     assert cases == [
         main_module.ExampleCase(
@@ -209,9 +212,66 @@ def test_main_runs_configured_models_and_example_dirs(
     assert "Skipped files" in captured.out
     assert "case02_input.gif: unsupported input format .gif" in captured.out
     assert "Overall report:" in captured.out
+    assert "Text report" in captured.out
     assert (tmp_path / "reports").is_dir()
     assert (tmp_path / "runtime").is_dir()
     assert (tmp_path / "reports" / "overall_benchmark_report.csv").is_file()
+    assert (tmp_path / "reports" / "overall_benchmark_report.txt").is_file()
+
+
+def test_run_batch_continues_when_single_case_preprocess_fails(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    report_dir = tmp_path / "reports"
+    runtime_dir = tmp_path / "runtime"
+    report_dir.mkdir()
+    runtime_dir.mkdir()
+
+    case_a = main_module.ExampleCase(
+        case_id="examples__ex01",
+        input_path=tmp_path / "examples" / "ex01_input.png",
+        output_path=tmp_path / "examples" / "ex01_output.csv",
+    )
+    case_b = main_module.ExampleCase(
+        case_id="examples__ex02",
+        input_path=tmp_path / "examples" / "ex02_input.csv",
+        output_path=tmp_path / "examples" / "ex02_output.csv",
+    )
+
+    def fake_run_single_case(*, example_case, **kwargs):
+        if example_case.case_id == "examples__ex01":
+            raise ValueError("Tesseract OCR is not available")
+        return {
+            "model": "model-a",
+            "case_id": example_case.case_id,
+            "input_path": str(example_case.input_path),
+            "output_path": str(example_case.output_path),
+            "report_path": "reports/mock.csv",
+            "elapsed_seconds": 1.0,
+            "status": "completed",
+            "total_rows": 1,
+            "successful_evaluations": 1,
+            "average_score": 1.0,
+        }
+
+    monkeypatch.setattr(main_module, "_run_single_case", fake_run_single_case)
+
+    results = main_module._run_batch(
+        cases=[case_a, case_b],
+        model_names=["model-a"],
+        report_dir=report_dir,
+        runtime_dataset_dir=runtime_dir,
+    )
+
+    assert len(results) == 2
+    assert results[0]["case_id"] == "examples__ex01"
+    assert results[0]["status"] == "failed_preprocess"
+    assert results[0]["average_score"] == 0.0
+    assert "Tesseract OCR is not available" in results[0]["error_message"]
+    assert results[1]["case_id"] == "examples__ex02"
+    assert results[1]["status"] == "completed"
 
 
 def test_write_overall_report_compares_files_and_models(tmp_path, monkeypatch):
@@ -285,6 +345,42 @@ def test_write_overall_report_compares_files_and_models(tmp_path, monkeypatch):
     assert overall_rows["overall_fastest"]["model"] == "model-a"
 
 
+def test_write_overall_text_report_contains_readable_tables(tmp_path, monkeypatch):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    batch_results = [
+        {
+            "model": "model-a",
+            "case_id": "file-1",
+            "status": "completed",
+            "average_score": 0.9,
+            "elapsed_seconds": 5.0,
+            "total_rows": 1,
+            "successful_evaluations": 1,
+        },
+        {
+            "model": "model-b",
+            "case_id": "file-1",
+            "status": "completed",
+            "average_score": 1.0,
+            "elapsed_seconds": 8.0,
+            "total_rows": 1,
+            "successful_evaluations": 1,
+        },
+    ]
+
+    report_path = main_module._write_overall_text_report(batch_results, tmp_path)
+    content = report_path.read_text(encoding="utf-8")
+
+    assert report_path == tmp_path / "overall_benchmark_report.txt"
+    assert "LLM Benchmark Report" in content
+    assert "Run Results" in content
+    assert "Case Comparison" in content
+    assert "Model Summary" in content
+    assert "Overall Winners" in content
+    assert "| Model" in content
+    assert "+-" in content
+
+
 def test_default_env_helpers_and_path_resolution(tmp_path, monkeypatch):
     monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
     monkeypatch.delenv("MODEL_NAMES", raising=False)
@@ -342,11 +438,113 @@ def test_source_type_handles_pdf_and_excel_labels():
     assert main_module._source_type(Path("invoice.xlsx")) == "Excel"
 
 
+def test_input_extensions_from_env_normalizes_values(monkeypatch):
+    monkeypatch.setenv("INPUT_EXTENSIONS", "png, .PDF")
+
+    extensions = main_module._input_extensions_from_env()
+
+    assert extensions == {".png", ".pdf"}
+
+
+def test_input_extensions_from_env_rejects_unsupported_extension(monkeypatch):
+    monkeypatch.setenv("INPUT_EXTENSIONS", ".png,.bad")
+
+    with pytest.raises(ValueError, match="Unsupported extension"):
+        main_module._input_extensions_from_env()
+
+
+def test_merge_base_overall_report_from_env_rejects_path_traversal(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setenv("MERGE_BASE_OVERALL_REPORT", "../outside.csv")
+
+    with pytest.raises(ValueError, match="MERGE_BASE_OVERALL_REPORT must stay inside"):
+        main_module._merge_base_overall_report_from_env()
+
+
+def test_write_overall_report_with_merge_combines_previous_and_new_data(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    base_overall_path = tmp_path / "base_overall.csv"
+    report_dir = tmp_path / "reports"
+    report_dir.mkdir()
+    base_overall_path.write_text(
+        "\n".join(
+            [
+                ",".join(main_module.OVERALL_REPORT_FIELDNAMES),
+                (
+                    "case_comparison,legacy_case,,model-a,0.7,model-a,3.0,,,"
+                    "4,4"
+                ),
+                "model_summary,,model-a,,,,,0.7,3.0,4,4",
+                "overall_best_average,,model-a,,,,,0.7,3.0,4,4",
+                "overall_fastest,,model-a,,,,,0.7,3.0,4,4",
+            ]
+        )
+        + "\n",
+        encoding="utf-8-sig",
+    )
+    batch_results = [
+        {
+            "model": "model-a",
+            "case_id": "new_case",
+            "status": "completed",
+            "average_score": 1.0,
+            "elapsed_seconds": 2.0,
+            "total_rows": 1,
+            "successful_evaluations": 1,
+        },
+        {
+            "model": "model-b",
+            "case_id": "new_case",
+            "status": "completed",
+            "average_score": 0.5,
+            "elapsed_seconds": 1.0,
+            "total_rows": 1,
+            "successful_evaluations": 1,
+        },
+    ]
+
+    merged_path = main_module._write_overall_report_with_merge(
+        batch_results,
+        report_dir,
+        base_overall_path,
+    )
+
+    with merged_path.open("r", newline="", encoding="utf-8-sig") as file:
+        merged_rows = list(csv.DictReader(file))
+
+    case_ids = [
+        row["case_id"]
+        for row in merged_rows
+        if row["section"] == "case_comparison"
+    ]
+    model_rows = {
+        row["model"]: row
+        for row in merged_rows
+        if row["section"] == "model_summary"
+    }
+
+    assert "legacy_case" in case_ids
+    assert "new_case" in case_ids
+    assert float(model_rows["model-a"]["average_score"]) == pytest.approx(0.76)
+    assert float(model_rows["model-a"]["average_seconds"]) == pytest.approx(2.8)
+    assert int(model_rows["model-a"]["total_runs"]) == 5
+
+
 def test_overall_helpers_handle_empty_inputs(capsys, tmp_path):
     assert main_module._overall_winner_rows([]) == []
     assert main_module._average_float([]) == 0.0
 
-    main_module._print_batch_summary([], tmp_path / "overall.csv")
+    main_module._print_batch_summary(
+        [],
+        tmp_path / "overall.csv",
+        tmp_path / "overall.txt",
+    )
     captured = capsys.readouterr()
 
     assert "No supported benchmark cases were found." in captured.out

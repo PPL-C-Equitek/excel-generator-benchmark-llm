@@ -5,7 +5,11 @@ import pytest
 from docx import Document
 
 import src.data_extractor as data_extractor
-from src.data_extractor import _xlsx_column_index, extract_text_from_file
+from src.data_extractor import (
+    _safe_xml_from_bytes,
+    _xlsx_column_index,
+    extract_text_from_file,
+)
 
 
 def test_extract_text_from_file_reads_csv_and_txt(tmp_path):
@@ -279,3 +283,11 @@ def test_missing_extractor_fallbacks_raise_clear_errors():
 
     with pytest.raises(RuntimeError, match="pytesseract is required"):
         data_extractor._MissingTesseract.image_to_string(object())
+
+
+def test_safe_xml_from_bytes_blocks_doctype_and_entity():
+    with pytest.raises(ValueError, match="Unsafe XML declaration"):
+        _safe_xml_from_bytes(b"<!DOCTYPE foo><root/>")
+
+    with pytest.raises(ValueError, match="Unsafe XML declaration"):
+        _safe_xml_from_bytes(b"<!ENTITY xxe SYSTEM 'file:///etc/passwd'><root/>")
