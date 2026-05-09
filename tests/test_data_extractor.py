@@ -442,3 +442,32 @@ def test_configure_tesseract_binary_returns_when_tesseract_in_path(monkeypatch):
     data_extractor._configure_tesseract_binary()
 
     assert fake_pytesseract.pytesseract.tesseract_cmd == "unchanged"
+
+
+def test_configure_tesseract_binary_uses_windows_candidate_when_available(
+    monkeypatch,
+    tmp_path,
+):
+    candidate_binary = tmp_path / "tesseract.exe"
+    candidate_binary.write_text("", encoding="utf-8")
+    fake_pytesseract = type(
+        "FakePytesseract",
+        (),
+        {"pytesseract": type("Inner", (), {"tesseract_cmd": ""})()},
+    )()
+    monkeypatch.setattr(data_extractor, "pytesseract", fake_pytesseract)
+    monkeypatch.setattr(
+        data_extractor,
+        "shutil",
+        type("S", (), {"which": staticmethod(lambda _: None)})(),
+    )
+    monkeypatch.setattr(
+        data_extractor,
+        "WINDOWS_TESSERACT_CANDIDATES",
+        (candidate_binary,),
+    )
+    monkeypatch.delenv("TESSERACT_CMD", raising=False)
+
+    data_extractor._configure_tesseract_binary()
+
+    assert fake_pytesseract.pytesseract.tesseract_cmd == str(candidate_binary)
