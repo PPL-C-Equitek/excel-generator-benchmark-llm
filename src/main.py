@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 
 from dotenv import load_dotenv
@@ -65,7 +66,9 @@ OVERALL_REPORT_FIELDNAMES = [
 # include only `synthetic_examples` unless caller overrides it explicitly.
 DEFAULT_BENCHMARK_REPORT_SOURCES = ("synthetic_examples",)
 REPORT_COMPLETED_STATUS = "completed"
-REPORT_SECTIONS_WITH_TABLES = ("Model Summary", "Overall Winners")
+MODEL_SUMMARY_TITLE = "Model Summary"
+OVERALL_WINNERS_TITLE = "Overall Winners"
+REPORT_SECTIONS_WITH_TABLES = (MODEL_SUMMARY_TITLE, OVERALL_WINNERS_TITLE)
 OVERALL_WINNER_FASTEST_LABEL = "Fastest average runtime"
 SYSTEM_PROMPT = """
 You are a document parsing assistant.
@@ -948,52 +951,161 @@ def _append_source_column_to_text_report(
     if not existing_txt_path.exists():
         raise FileNotFoundError(existing_txt_path)
 
-    derived_path = _safe_output_path(
-        report_dir,
-        f"{existing_txt_path.stem}_{source_name}{existing_txt_path.suffix}",
+    derived_path = _derived_text_report_path(
+        existing_txt_path=existing_txt_path,
+        report_dir=report_dir,
+        source_name=source_name,
     )
     existing_content = existing_txt_path.read_text(encoding="utf-8")
     lines = existing_content.splitlines()
-    source_model_scores = _average_scores_by_model_for_source(report_dir, source_name)
-
-    if not lines:
-        lines = [f"Model | {source_name}"]
-    elif not _has_full_report_sections(lines):
-        # Fallback for simple one-table text files used by compatibility tests.
-        header = lines[0]
-        if source_name not in header:
-            lines[0] = f"{header} | {source_name}"
-        for index in range(1, len(lines)):
-            if "|" in lines[index] and lines[index].strip():
-                lines[index] = f"{lines[index]} | "
-    else:
-        lines = _add_column_to_section_table(
-            lines,
-            section_title=REPORT_SECTIONS_WITH_TABLES[0],
-            column_name=source_name,
-            value_by_row=lambda cells: (
-                f"{source_model_scores[cells[0]]:.4f}"
-                if cells and cells[0] in source_model_scores
-                else ""
-            ),
-        )
-        lines = _add_column_to_section_table(
-            lines,
-            section_title=REPORT_SECTIONS_WITH_TABLES[1],
-            column_name=source_name,
-            value_by_row=lambda cells: (
-                ""
-                if cells and cells[0] == OVERALL_WINNER_FASTEST_LABEL
-                else (
-                    f"{source_model_scores[cells[1]]:.4f}"
-                    if len(cells) > 1 and cells[1] in source_model_scores
-                    else ""
-                )
-            ),
-        )
+    lines = _with_source_column_added(
+        lines=lines,
+        report_dir=report_dir,
+        source_name=source_name,
+    )
 
     derived_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return derived_path
+
+
+def _derived_text_report_path(
+    *,
+    existing_txt_path: Path,
+    report_dir: Path,
+    source_name: str,
+) -> Path:
+    """Build a validated derived TXT path for additive report output."""
+    safe_source_name = _validated_source_name(source_name)
+    derived_filename = (
+        f"{existing_txt_path.stem}_{safe_source_name}{existing_txt_path.suffix}"
+    )
+    return _safe_output_path(report_dir, derived_filename)
+
+
+def _validated_source_name(source_name: str) -> str:
+    """Validate a source name used in derived report filenames.
+
+    Rejects absolute paths, traversal segments, and separator-based path
+    injection attempts from user-controlled input.
+    """
+    normalized = source_name.strip().replace("\\", "/")
+    if not normalized:
+        raise ValueError("source_name cannot be empty.")
+
+    source_path = PurePosixPath(normalized)
+    if source_path.is_absolute():
+        raise ValueError(
+            "source_name must be a plain name, not an absolute path."
+        )
+    if any(part in {"..", "."} for part in source_path.parts):
+        raise ValueError(
+            "source_name must not contain path traversal segments."
+        )
+    if len(source_path.parts) != 1:
+        raise ValueError(
+            "source_name must not contain path separators."
+        )
+
+    return normalized
+
+
+def _with_source_column_added(
+    *,
+    lines: list[str],
+    report_dir: Path,
+    source_name: str,
+) -> list[str]:
+    """Add a source-specific column to report text lines."""
+    source_model_scores = _average_scores_by_model_for_source(report_dir, source_name)
+
+    if not lines:
+        return [f"Model | {source_name}"]
+    if not _has_full_report_sections(lines):
+        return _append_source_column_to_simple_lines(lines, source_name)
+
+    return _append_source_column_to_full_report(
+        lines=lines,
+        source_name=source_name,
+        source_model_scores=source_model_scores,
+    )
+
+
+def _append_source_column_to_simple_lines(
+    lines: list[str],
+    source_name: str,
+) -> list[str]:
+    """Fallback strategy for legacy/plain one-table text output."""
+    updated_lines = list(lines)
+    header = updated_lines[0]
+    if source_name not in header:
+        updated_lines[0] = f"{header} | {source_name}"
+    for index in range(1, len(updated_lines)):
+        if "|" in updated_lines[index] and updated_lines[index].strip():
+            updated_lines[index] = f"{updated_lines[index]} | "
+    return updated_lines
+
+
+def _append_source_column_to_full_report(
+    *,
+    lines: list[str],
+    source_name: str,
+    source_model_scores: dict[str, float],
+) -> list[str]:
+    """Add source column for sectioned benchmark reports."""
+    updated_lines = _add_column_to_section_table(
+        lines,
+        section_title=MODEL_SUMMARY_TITLE,
+        column_name=source_name,
+        value_by_row=lambda cells: _model_summary_source_score(
+            row_cells=cells,
+            source_model_scores=source_model_scores,
+        ),
+    )
+    return _add_column_to_section_table(
+        updated_lines,
+        section_title=OVERALL_WINNERS_TITLE,
+        column_name=source_name,
+        value_by_row=lambda cells: _overall_winner_source_score(
+            row_cells=cells,
+            source_model_scores=source_model_scores,
+        ),
+    )
+
+
+def _model_summary_source_score(
+    *,
+    row_cells: list[str],
+    source_model_scores: dict[str, float],
+) -> str:
+    """Compute source-column value for one Model Summary row."""
+    if not row_cells:
+        return ""
+    model_name = row_cells[0]
+    score = source_model_scores.get(model_name)
+    if score is None:
+        return ""
+    return f"{score:.4f}"
+
+
+def _overall_winner_source_score(
+    *,
+    row_cells: list[str],
+    source_model_scores: dict[str, float],
+) -> str:
+    """Compute source-column value for one Overall Winners row."""
+    if not row_cells:
+        return ""
+    category = row_cells[0]
+    if category == OVERALL_WINNER_FASTEST_LABEL:
+        return ""
+    if len(row_cells) <= 1:
+        return ""
+
+    winner_model = row_cells[1]
+    winner_score = source_model_scores.get(winner_model)
+    if winner_score is None:
+        return ""
+    return f"{winner_score:.4f}"
 
 
 def _add_column_to_section_table(
@@ -1347,7 +1459,7 @@ def _write_overall_text_report(
         if overall_rows is not None
         else _overall_winner_rows(batch_results)
     )
-    lines.extend(["", "Overall Winners", "---------------"])
+    lines.extend(["", OVERALL_WINNERS_TITLE, "---------------"])
     if winner_rows:
         best_average_row, fastest_row = winner_rows
         lines.append(
@@ -1746,7 +1858,7 @@ def _print_batch_summary(
     if winner_rows:
         best_average_row, fastest_row = winner_rows
         print("")
-        print("Overall Winners")
+        print(OVERALL_WINNERS_TITLE)
         print("---------------")
         print(
             "Best average score: "
