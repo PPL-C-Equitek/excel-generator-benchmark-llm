@@ -12,7 +12,6 @@ from collections.abc import Iterable
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from pathlib import PurePosixPath
 from typing import Any
 
 from dotenv import load_dotenv
@@ -70,6 +69,7 @@ MODEL_SUMMARY_TITLE = "Model Summary"
 OVERALL_WINNERS_TITLE = "Overall Winners"
 REPORT_SECTIONS_WITH_TABLES = (MODEL_SUMMARY_TITLE, OVERALL_WINNERS_TITLE)
 OVERALL_WINNER_FASTEST_LABEL = "Fastest average runtime"
+DERIVED_TEXT_REPORT_SUFFIX = "_source_augmented"
 SYSTEM_PROMPT = """
 You are a document parsing assistant.
 
@@ -945,8 +945,9 @@ def _append_source_column_to_text_report(
     """Create an additive TXT report variant with one extra source column.
 
     This function never overwrites the original TXT report. It always writes to
-    a derived filename (for example ``overall_benchmark_report_<source>.txt``)
-    so historical reports stay intact.
+    a derived filename based on the original report stem with a fixed suffix
+    (for example ``overall_benchmark_report_source_augmented.txt``) so
+    historical reports stay intact.
     """
     if not existing_txt_path.exists():
         raise FileNotFoundError(existing_txt_path)
@@ -954,7 +955,6 @@ def _append_source_column_to_text_report(
     derived_path = _derived_text_report_path(
         existing_txt_path=existing_txt_path,
         report_dir=report_dir,
-        source_name=source_name,
     )
     existing_content = existing_txt_path.read_text(encoding="utf-8")
     lines = existing_content.splitlines()
@@ -972,41 +972,13 @@ def _derived_text_report_path(
     *,
     existing_txt_path: Path,
     report_dir: Path,
-    source_name: str,
 ) -> Path:
     """Build a validated derived TXT path for additive report output."""
-    safe_source_name = _validated_source_name(source_name)
     derived_filename = (
-        f"{existing_txt_path.stem}_{safe_source_name}{existing_txt_path.suffix}"
+        f"{existing_txt_path.stem}{DERIVED_TEXT_REPORT_SUFFIX}"
+        f"{existing_txt_path.suffix}"
     )
     return _safe_output_path(report_dir, derived_filename)
-
-
-def _validated_source_name(source_name: str) -> str:
-    """Validate a source name used in derived report filenames.
-
-    Rejects absolute paths, traversal segments, and separator-based path
-    injection attempts from user-controlled input.
-    """
-    normalized = source_name.strip().replace("\\", "/")
-    if not normalized:
-        raise ValueError("source_name cannot be empty.")
-
-    source_path = PurePosixPath(normalized)
-    if source_path.is_absolute():
-        raise ValueError(
-            "source_name must be a plain name, not an absolute path."
-        )
-    if any(part in {"..", "."} for part in source_path.parts):
-        raise ValueError(
-            "source_name must not contain path traversal segments."
-        )
-    if len(source_path.parts) != 1:
-        raise ValueError(
-            "source_name must not contain path separators."
-        )
-
-    return normalized
 
 
 def _with_source_column_added(

@@ -340,18 +340,17 @@ def test_append_source_column_updates_full_report_sections():
 
 
 @pytest.mark.parametrize(
-    ("source_name", "message"),
+    "source_name",
     [
-        ("../escape", "path traversal"),
-        ("/tmp/escape", "absolute path"),
-        ("..\\escape", "path traversal"),
-        ("folder\\sub", "path separators"),
-        ("folder/sub", "path separators"),
+        "../escape",
+        "/tmp/escape",
+        "..\\escape",
+        "folder\\sub",
+        "folder/sub",
     ],
 )
 def test_append_source_column_rejects_malicious_source_name(
     source_name,
-    message,
 ):
     tmp_path = _sandbox_dir("malicious_source_name")
     report_dir = tmp_path / "benchmark_reports"
@@ -359,32 +358,13 @@ def test_append_source_column_rejects_malicious_source_name(
     existing_txt = report_dir / "overall_benchmark_report.txt"
     existing_txt.write_text("Model | synthetic_examples\nmodel-a | 0.5\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match=message):
-        main_module._append_source_column_to_text_report(
-            existing_txt,
-            report_dir=report_dir,
-            source_name=source_name,
-        )
-
-
-def test_validated_source_name_accepts_plain_name():
-    assert (
-        main_module._validated_source_name("synthetic_examples_lanjutan")
-        == "synthetic_examples_lanjutan"
+    output_path = main_module._append_source_column_to_text_report(
+        existing_txt,
+        report_dir=report_dir,
+        source_name=source_name,
     )
-
-
-@pytest.mark.parametrize(
-    ("source_name", "message"),
-    [
-        ("", "cannot be empty"),
-        ("   ", "cannot be empty"),
-        ("/absolute", "absolute path"),
-    ],
-)
-def test_validated_source_name_rejects_invalid_names(source_name, message):
-    with pytest.raises(ValueError, match=message):
-        main_module._validated_source_name(source_name)
+    # Path is derived from existing report only, never from source_name.
+    assert output_path.name == "overall_benchmark_report_source_augmented.txt"
 
 
 def test_derived_text_report_path_stays_inside_report_dir():
@@ -397,7 +377,6 @@ def test_derived_text_report_path_stays_inside_report_dir():
     derived_path = main_module._derived_text_report_path(
         existing_txt_path=existing_txt,
         report_dir=report_dir,
-        source_name="synthetic_examples_lanjutan",
     )
 
     assert derived_path.parent.resolve() == report_dir.resolve()
