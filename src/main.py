@@ -9,6 +9,7 @@ import re
 import sys
 import time
 from collections.abc import Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -60,7 +61,12 @@ OVERALL_REPORT_FIELDNAMES = [
     "total_runs",
     "completed_runs",
 ]
+# Default source filter for benchmark-report ingestion:
+# include only `synthetic_examples` unless caller overrides it explicitly.
 DEFAULT_BENCHMARK_REPORT_SOURCES = ("synthetic_examples",)
+REPORT_COMPLETED_STATUS = "completed"
+REPORT_SECTIONS_WITH_TABLES = ("Model Summary", "Overall Winners")
+OVERALL_WINNER_FASTEST_LABEL = "Fastest average runtime"
 SYSTEM_PROMPT = """
 You are a document parsing assistant.
 
@@ -840,7 +846,10 @@ def _read_overall_report_rows(path: Path) -> list[dict[str, str]]:
 
 
 def _default_benchmark_report_sources() -> tuple[str, ...]:
-    """Return default benchmark report sources to include."""
+    """Return default benchmark report sources to include.
+
+    The default is intentionally narrow: only ``synthetic_examples``.
+    """
     return DEFAULT_BENCHMARK_REPORT_SOURCES
 
 
@@ -881,18 +890,15 @@ def _collect_benchmark_report_rows(
     collected_rows: list[dict[str, Any]] = []
 
     for path in sorted(report_dir.glob("*.csv")):
-        parts = path.stem.split("__")
-        if len(parts) < 3:
+        name_parts = _model_and_source_from_report_filename(path)
+        if name_parts is None:
             continue
-        source_name = parts[1]
-        model_name = parts[0]
+        model_name, source_name = name_parts
         if source_name not in selected_set:
             continue
 
         for row in _read_benchmark_report_rows(path):
-            if row.get("status") != "completed":
-                continue
-            if not str(row.get("llm_output", "")).strip():
+            if not _is_completed_row_with_output(row):
                 continue
             collected_rows.append(
                 {
@@ -933,7 +939,12 @@ def _append_source_column_to_text_report(
     report_dir: Path,
     source_name: str,
 ) -> Path:
-    """Create an additive TXT report variant with one extra source column."""
+    """Create an additive TXT report variant with one extra source column.
+
+    This function never overwrites the original TXT report. It always writes to
+    a derived filename (for example ``overall_benchmark_report_<source>.txt``)
+    so historical reports stay intact.
+    """
     if not existing_txt_path.exists():
         raise FileNotFoundError(existing_txt_path)
 
@@ -947,7 +958,7 @@ def _append_source_column_to_text_report(
 
     if not lines:
         lines = [f"Model | {source_name}"]
-    elif "Model Summary" not in lines and "Overall Winners" not in lines:
+    elif not _has_full_report_sections(lines):
         # Fallback for simple one-table text files used by compatibility tests.
         header = lines[0]
         if source_name not in header:
@@ -958,7 +969,7 @@ def _append_source_column_to_text_report(
     else:
         lines = _add_column_to_section_table(
             lines,
-            section_title="Model Summary",
+            section_title=REPORT_SECTIONS_WITH_TABLES[0],
             column_name=source_name,
             value_by_row=lambda cells: (
                 f"{source_model_scores[cells[0]]:.4f}"
@@ -968,11 +979,11 @@ def _append_source_column_to_text_report(
         )
         lines = _add_column_to_section_table(
             lines,
-            section_title="Overall Winners",
+            section_title=REPORT_SECTIONS_WITH_TABLES[1],
             column_name=source_name,
             value_by_row=lambda cells: (
                 ""
-                if cells and cells[0] == "Fastest average runtime"
+                if cells and cells[0] == OVERALL_WINNER_FASTEST_LABEL
                 else (
                     f"{source_model_scores[cells[1]]:.4f}"
                     if len(cells) > 1 and cells[1] in source_model_scores
@@ -990,14 +1001,14 @@ def _add_column_to_section_table(
     *,
     section_title: str,
     column_name: str,
-    value_by_row: Any,
+    value_by_row: Callable[[list[str]], str],
 ) -> list[str]:
     """Add one column to a section table and re-render it for clean alignment."""
     section_index = _find_line_index(lines, section_title)
     if section_index is None:
         return lines
 
-    table_start = _find_table_start(lines, section_index + 1)
+    table_start = _find_table_border_line(lines, section_index + 1)
     if table_start is None or table_start + 2 >= len(lines):
         return lines
 
@@ -1013,7 +1024,7 @@ def _add_column_to_section_table(
         column_index = len(headers) - 1
 
     row_start = table_start + 3
-    table_end = _find_table_end(lines, row_start)
+    table_end = _find_table_border_line(lines, row_start)
     if table_end is None:
         return lines
 
@@ -1039,14 +1050,7 @@ def _find_line_index(lines: list[str], target: str) -> int | None:
     return None
 
 
-def _find_table_start(lines: list[str], start: int) -> int | None:
-    for index in range(start, len(lines)):
-        if lines[index].strip().startswith("+-"):
-            return index
-    return None
-
-
-def _find_table_end(lines: list[str], start: int) -> int | None:
+def _find_table_border_line(lines: list[str], start: int) -> int | None:
     for index in range(start, len(lines)):
         if lines[index].strip().startswith("+-"):
             return index
@@ -1058,6 +1062,28 @@ def _table_cells(line: str) -> list[str]:
     if not stripped.startswith("|"):
         return []
     return [cell.strip() for cell in stripped.strip("|").split("|")]
+
+
+def _model_and_source_from_report_filename(
+    path: Path,
+) -> tuple[str, str] | None:
+    """Extract model and source name from benchmark-report CSV filename."""
+    parts = path.stem.split("__")
+    if len(parts) < 3:
+        return None
+    return parts[0], parts[1]
+
+
+def _is_completed_row_with_output(row: dict[str, Any]) -> bool:
+    """Check whether one row should be included in source-score aggregation."""
+    return row.get("status") == REPORT_COMPLETED_STATUS and bool(
+        str(row.get("llm_output", "")).strip()
+    )
+
+
+def _has_full_report_sections(lines: list[str]) -> bool:
+    """Return whether the text report contains both key table sections."""
+    return all(section in lines for section in REPORT_SECTIONS_WITH_TABLES)
 
 
 def _merge_overall_rows(

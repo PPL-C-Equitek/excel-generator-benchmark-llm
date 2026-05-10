@@ -2,6 +2,8 @@ import csv
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 import src.main as main_module
 
 
@@ -189,3 +191,277 @@ def test_new_source_column_is_added_additively_to_existing_text_report():
     header = output_path.read_text(encoding="utf-8").splitlines()[0]
     assert "synthetic_examples" in header
     assert "synthetic_examples_lanjutan" in header
+
+
+def test_project_path_returns_absolute_path_unchanged():
+    absolute_path = Path.cwd().resolve()
+
+    assert main_module._project_path(absolute_path) == absolute_path
+
+
+def test_collect_benchmark_rows_skips_non_matching_and_malformed_filenames():
+    tmp_path = _sandbox_dir("collect_filters")
+    report_dir = tmp_path / "benchmark_reports"
+    report_dir.mkdir()
+    _write_benchmark_csv(
+        report_dir / "malformed.csv",
+        [
+            {
+                "row_index": "1",
+                "status": "completed",
+                "score": "1.0",
+                "llm_output": '{"ok": true}',
+                "error_message": "",
+            }
+        ],
+    )
+    _write_benchmark_csv(
+        report_dir / "model-a__like-real_examples__lr01.csv",
+        [
+            {
+                "row_index": "1",
+                "status": "completed",
+                "score": "1.0",
+                "llm_output": '{"ok": true}',
+                "error_message": "",
+            }
+        ],
+    )
+
+    rows = main_module._collect_benchmark_report_rows(report_dir)
+
+    assert rows == []
+
+
+def test_average_scores_by_model_ignores_rows_without_model(mocker):
+    mocker.patch(
+        "src.main._collect_benchmark_report_rows",
+        return_value=[
+            {"model": "", "score": "0.5", "status": "completed", "llm_output": "{}"},
+            {
+                "model": "model-a",
+                "score": "1.0",
+                "status": "completed",
+                "llm_output": "{}",
+            },
+        ],
+    )
+
+    averages = main_module._average_scores_by_model_for_source(
+        Path.cwd(),
+        "synthetic_examples",
+    )
+
+    assert averages == {"model-a": pytest.approx(1.0)}
+
+
+def test_append_source_column_raises_when_base_text_missing():
+    with pytest.raises(FileNotFoundError):
+        main_module._append_source_column_to_text_report(
+            Path.cwd() / "missing_overall.txt",
+            report_dir=Path.cwd(),
+            source_name="synthetic_examples_lanjutan",
+        )
+
+
+def test_append_source_column_handles_empty_existing_text_file():
+    tmp_path = _sandbox_dir("empty_text")
+    report_dir = tmp_path / "benchmark_reports"
+    report_dir.mkdir()
+    existing_txt = report_dir / "overall_benchmark_report.txt"
+    existing_txt.write_text("", encoding="utf-8")
+
+    output_path = main_module._append_source_column_to_text_report(
+        existing_txt,
+        report_dir=report_dir,
+        source_name="synthetic_examples_lanjutan",
+    )
+
+    content = output_path.read_text(encoding="utf-8")
+    assert content.startswith("Model | synthetic_examples_lanjutan")
+
+
+def test_append_source_column_updates_full_report_sections():
+    tmp_path = _sandbox_dir("full_sections")
+    report_dir = tmp_path / "benchmark_reports"
+    report_dir.mkdir()
+    existing_txt = report_dir / "overall_benchmark_report.txt"
+    existing_txt.write_text(
+        "\n".join(
+            [
+                "LLM Benchmark Report",
+                "====================",
+                "",
+                "Model Summary",
+                "-------------",
+                main_module._format_table(
+                    ["Model", "Average Score", "Average Seconds", "Completed/Total"],
+                    [["model-a", "0.50", "10.00", "1/1"]],
+                ),
+                "",
+                "Overall Winners",
+                "---------------",
+                main_module._format_table(
+                    ["Category", "Model", "Average Score", "Average Seconds"],
+                    [
+                        ["Best average score", "model-a", "0.50", "10.00"],
+                        ["Fastest average runtime", "model-a", "0.50", "10.00"],
+                    ],
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_benchmark_csv(
+        report_dir / "model-a__synthetic_examples_lanjutan__dx01.csv",
+        [
+            {
+                "row_index": "1",
+                "status": "completed",
+                "score": "0.75",
+                "llm_output": '{"invoice_id":"INV-NEW"}',
+                "error_message": "",
+            }
+        ],
+    )
+
+    output_path = main_module._append_source_column_to_text_report(
+        existing_txt,
+        report_dir=report_dir,
+        source_name="synthetic_examples_lanjutan",
+    )
+    content = output_path.read_text(encoding="utf-8")
+
+    assert "| synthetic_examples_lanjutan |" in content
+    assert "| 0.7500" in content
+    # Kept from overall winners baseline: column intentionally blank here.
+    assert "Fastest average runtime" in content
+
+
+def test_add_column_to_section_table_handles_missing_section():
+    lines = ["Header", "No table here"]
+
+    assert (
+        main_module._add_column_to_section_table(
+            lines,
+            section_title="Model Summary",
+            column_name="synthetic_examples_lanjutan",
+            value_by_row=lambda _cells: "",
+        )
+        == lines
+    )
+
+
+def test_add_column_to_section_table_handles_section_without_border():
+    lines = ["Model Summary", "-------------", "| header |"]
+
+    assert (
+        main_module._add_column_to_section_table(
+            lines,
+            section_title="Model Summary",
+            column_name="synthetic_examples_lanjutan",
+            value_by_row=lambda _cells: "",
+        )
+        == lines
+    )
+
+
+def test_add_column_to_section_table_handles_non_tabular_header_line():
+    lines = ["Model Summary", "-------------", "+---+", "not a row", "+---+"]
+
+    assert (
+        main_module._add_column_to_section_table(
+            lines,
+            section_title="Model Summary",
+            column_name="synthetic_examples_lanjutan",
+            value_by_row=lambda _cells: "",
+        )
+        == lines
+    )
+
+
+def test_add_column_to_section_table_handles_missing_closing_border():
+    lines = [
+        "Model Summary",
+        "-------------",
+        "+---+",
+        "| Model |",
+        "+---+",
+        "| model-a |",
+    ]
+
+    assert (
+        main_module._add_column_to_section_table(
+            lines,
+            section_title="Model Summary",
+            column_name="synthetic_examples_lanjutan",
+            value_by_row=lambda _cells: "",
+        )
+        == lines
+    )
+
+
+def test_add_column_to_section_table_does_not_duplicate_existing_column():
+    rendered = main_module._format_table(
+        ["Model", "synthetic_examples_lanjutan"],
+        [["model-a", "0.75"]],
+    )
+    lines = ["Model Summary", "-------------", *rendered.splitlines()]
+
+    updated = main_module._add_column_to_section_table(
+        lines,
+        section_title="Model Summary",
+        column_name="synthetic_examples_lanjutan",
+        value_by_row=lambda _cells: "0.80",
+    )
+
+    joined = "\n".join(updated)
+    assert joined.count("synthetic_examples_lanjutan") == 1
+    assert "0.80" in joined
+
+
+def test_add_column_to_section_table_skips_non_row_lines_inside_table_body():
+    lines = [
+        "Model Summary",
+        "-------------",
+        "+-------+-------+",
+        "| Model | Score |",
+        "+-------+-------+",
+        "not-a-row",
+        "| model-a | 0.50 |",
+        "+-------+-------+",
+    ]
+
+    updated = main_module._add_column_to_section_table(
+        lines,
+        section_title="Model Summary",
+        column_name="synthetic_examples_lanjutan",
+        value_by_row=lambda _cells: "0.75",
+    )
+
+    joined = "\n".join(updated)
+    assert "model-a" in joined
+    assert "0.75" in joined
+
+
+def test_helpers_for_table_lookup_and_cells():
+    lines = ["A", "Model Summary", "+---+", "| X |", "+---+"]
+
+    assert main_module._find_line_index(lines, "Model Summary") == 1
+    assert main_module._find_line_index(lines, "missing") is None
+    assert main_module._find_table_border_line(lines, 0) == 2
+    assert main_module._find_table_border_line(lines, 4) == 4
+    assert main_module._find_table_border_line(lines, 5) is None
+    assert main_module._table_cells("| A | B |") == ["A", "B"]
+    assert main_module._table_cells("plain text") == []
+
+
+def test_filename_source_extractor_handles_invalid_and_valid_names():
+    assert (
+        main_module._model_and_source_from_report_filename(Path("bad.csv"))
+        is None
+    )
+    assert main_module._model_and_source_from_report_filename(
+        Path("model-a__synthetic_examples__ex01.csv")
+    ) == ("model-a", "synthetic_examples")
