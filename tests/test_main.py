@@ -432,7 +432,8 @@ def test_default_env_helpers_and_path_resolution(tmp_path, monkeypatch):
 
 def test_example_dirs_from_env_rejects_path_outside_project(tmp_path, monkeypatch):
     monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setenv("EXAMPLE_DIRS", "D:/outside/examples")
+    outside_project = tmp_path.parent / "outside_examples"
+    monkeypatch.setenv("EXAMPLE_DIRS", str(outside_project))
 
     with pytest.raises(ValueError, match="EXAMPLE_DIRS"):
         main_module._example_dirs_from_env()
