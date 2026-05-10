@@ -371,16 +371,20 @@ def test_derived_text_report_path_stays_inside_report_dir():
     tmp_path = _sandbox_dir("derived_path")
     report_dir = tmp_path / "benchmark_reports"
     report_dir.mkdir()
-    existing_txt = report_dir / "overall_benchmark_report.txt"
-    existing_txt.write_text("x", encoding="utf-8")
 
-    derived_path = main_module._derived_text_report_path(
-        existing_txt_path=existing_txt,
-        report_dir=report_dir,
-    )
+    derived_path = main_module._derived_text_report_path(report_dir=report_dir)
 
     assert derived_path.parent.resolve() == report_dir.resolve()
-    assert derived_path.name.endswith(".txt")
+    assert derived_path.name == "overall_benchmark_report_source_augmented.txt"
+
+
+def test_derived_text_report_path_rejects_base_dir_outside_project(monkeypatch):
+    fake_project_root = Path.cwd().resolve() / "repo-root"
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", fake_project_root)
+
+    outside_dir = Path("D:/outside-report-dir")
+    with pytest.raises(ValueError, match="must stay inside the project directory"):
+        main_module._derived_text_report_path(report_dir=outside_dir)
 
 
 def test_model_summary_source_score_handles_missing_inputs():

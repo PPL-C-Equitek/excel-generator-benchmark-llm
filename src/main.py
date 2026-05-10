@@ -69,7 +69,7 @@ MODEL_SUMMARY_TITLE = "Model Summary"
 OVERALL_WINNERS_TITLE = "Overall Winners"
 REPORT_SECTIONS_WITH_TABLES = (MODEL_SUMMARY_TITLE, OVERALL_WINNERS_TITLE)
 OVERALL_WINNER_FASTEST_LABEL = "Fastest average runtime"
-DERIVED_TEXT_REPORT_SUFFIX = "_source_augmented"
+DERIVED_TEXT_REPORT_FILENAME = "overall_benchmark_report_source_augmented.txt"
 SYSTEM_PROMPT = """
 You are a document parsing assistant.
 
@@ -952,10 +952,7 @@ def _append_source_column_to_text_report(
     if not existing_txt_path.exists():
         raise FileNotFoundError(existing_txt_path)
 
-    derived_path = _derived_text_report_path(
-        existing_txt_path=existing_txt_path,
-        report_dir=report_dir,
-    )
+    derived_path = _derived_text_report_path(report_dir=report_dir)
     existing_content = existing_txt_path.read_text(encoding="utf-8")
     lines = existing_content.splitlines()
     lines = _with_source_column_added(
@@ -970,15 +967,22 @@ def _append_source_column_to_text_report(
 
 def _derived_text_report_path(
     *,
-    existing_txt_path: Path,
     report_dir: Path,
 ) -> Path:
     """Build a validated derived TXT path for additive report output."""
-    derived_filename = (
-        f"{existing_txt_path.stem}{DERIVED_TEXT_REPORT_SUFFIX}"
-        f"{existing_txt_path.suffix}"
-    )
-    return _safe_output_path(report_dir, derived_filename)
+    # Use a fixed filename to avoid constructing output paths from user-
+    # controlled values. Then enforce canonical base-dir confinement.
+    safe_base_dir = report_dir.resolve()
+    project_root = PROJECT_ROOT.resolve()
+    if not safe_base_dir.is_relative_to(project_root):
+        raise ValueError(
+            f"output directory must stay inside the project directory: "
+            f"{safe_base_dir}"
+        )
+    derived_path = (safe_base_dir / DERIVED_TEXT_REPORT_FILENAME).resolve()
+    if not derived_path.is_relative_to(safe_base_dir):
+        raise ValueError("Derived text report path escapes the output directory.")
+    return derived_path
 
 
 def _with_source_column_added(
