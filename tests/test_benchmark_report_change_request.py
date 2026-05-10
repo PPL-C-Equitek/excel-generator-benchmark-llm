@@ -276,6 +276,29 @@ def test_append_source_column_rejects_existing_text_path_outside_project(monkeyp
         )
 
 
+def test_append_source_column_rejects_when_commonpath_fails_on_project_check(
+    monkeypatch,
+):
+    tmp_path = _sandbox_dir("append_commonpath_project_failure")
+    report_dir = tmp_path / "benchmark_reports"
+    report_dir.mkdir()
+    existing_txt = report_dir / "overall_benchmark_report.txt"
+    existing_txt.write_text("Model | synthetic_examples\nmodel-a | 0.5\n", encoding="utf-8")
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        main_module.os.path,
+        "commonpath",
+        lambda _paths: (_ for _ in ()).throw(ValueError("forced commonpath failure")),
+    )
+
+    with pytest.raises(ValueError, match="existing text report path"):
+        main_module._append_source_column_to_text_report(
+            existing_txt,
+            report_dir=report_dir,
+            source_name="synthetic_examples_lanjutan",
+        )
+
+
 def test_read_benchmark_report_rows_rejects_path_outside_project(monkeypatch):
     fake_project_root = Path.cwd().resolve() / "repo-root"
     monkeypatch.setattr(main_module, "PROJECT_ROOT", fake_project_root)
@@ -415,6 +438,23 @@ def test_derived_text_report_path_rejects_base_dir_outside_project(monkeypatch):
         main_module._derived_text_report_path(report_dir=outside_dir)
 
 
+def test_derived_text_report_path_rejects_when_commonpath_fails_on_project_check(
+    monkeypatch,
+):
+    tmp_path = _sandbox_dir("derived_path_project_commonpath_failure")
+    report_dir = tmp_path / "benchmark_reports"
+    report_dir.mkdir()
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        main_module.os.path,
+        "commonpath",
+        lambda _paths: (_ for _ in ()).throw(ValueError("forced commonpath failure")),
+    )
+
+    with pytest.raises(ValueError, match="must stay inside the project directory"):
+        main_module._derived_text_report_path(report_dir=report_dir)
+
+
 def test_derived_text_report_path_rejects_when_commonpath_fails_on_derived_check(
     monkeypatch,
 ):
@@ -454,6 +494,26 @@ def test_write_derived_text_report_writes_fixed_filename():
 
     assert output_path.name == "overall_benchmark_report_source_augmented.txt"
     assert output_path.read_text(encoding="utf-8") == "hello\n"
+
+
+def test_write_derived_text_report_rejects_when_commonpath_fails_on_project_check(
+    monkeypatch,
+):
+    tmp_path = _sandbox_dir("write_derived_project_commonpath_failure")
+    report_dir = tmp_path / "benchmark_reports"
+    report_dir.mkdir()
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        main_module.os.path,
+        "commonpath",
+        lambda _paths: (_ for _ in ()).throw(ValueError("forced commonpath failure")),
+    )
+
+    with pytest.raises(ValueError, match="must stay inside the project directory"):
+        main_module._write_derived_text_report(
+            report_dir=report_dir,
+            content="hello\n",
+        )
 
 
 def test_write_derived_text_report_rejects_when_commonpath_fails_on_derived_check(
