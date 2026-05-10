@@ -39,8 +39,8 @@ DEFAULT_EXAMPLE_DIRS = (
     "like-real.examples",
 )
 DEFAULT_DATA_DIR = "data"
-DEFAULT_REPORT_DIR = f"{DEFAULT_DATA_DIR}/benchmark_reports"
-DEFAULT_RUNTIME_DATASET_DIR = f"{DEFAULT_DATA_DIR}/benchmark_runtime_datasets"
+DEFAULT_REPORT_DIR = f"benchmark_reports"
+DEFAULT_RUNTIME_DATASET_DIR = f"benchmark_runtime_datasets"
 OVERALL_REPORT_FILENAME = "overall_benchmark_report.csv"
 OVERALL_TEXT_REPORT_FILENAME = "overall_benchmark_report.txt"
 CSV_ENCODING = "utf-8-sig"
@@ -60,6 +60,7 @@ OVERALL_REPORT_FIELDNAMES = [
     "total_runs",
     "completed_runs",
 ]
+DEFAULT_BENCHMARK_REPORT_SOURCES = ("synthetic_examples",)
 SYSTEM_PROMPT = """
 You are a document parsing assistant.
 
@@ -836,6 +837,227 @@ def _read_overall_report_rows(path: Path) -> list[dict[str, str]]:
     """Read an existing overall benchmark report."""
     with path.open("r", newline="", encoding=CSV_ENCODING) as file:
         return list(csv.DictReader(file))
+
+
+def _default_benchmark_report_sources() -> tuple[str, ...]:
+    """Return default benchmark report sources to include."""
+    return DEFAULT_BENCHMARK_REPORT_SOURCES
+
+
+def _read_benchmark_report_rows(path: Path) -> list[dict[str, Any]]:
+    """Read benchmark CSV rows and parse ``llm_output`` safely."""
+    rows: list[dict[str, Any]] = []
+    with path.open("r", newline="", encoding="utf-8") as file:
+        for row in csv.DictReader(file):
+            llm_output = (row.get("llm_output") or "").strip()
+            parsed_llm_output: dict[str, Any] = {}
+            if llm_output:
+                try:
+                    parsed = json.loads(llm_output)
+                    if isinstance(parsed, dict):
+                        parsed_llm_output = parsed
+                except json.JSONDecodeError:
+                    parsed_llm_output = {}
+
+            rows.append(
+                {
+                    **row,
+                    "row_index": int(row.get("row_index", 0) or 0),
+                    "parsed_llm_output": parsed_llm_output,
+                }
+            )
+
+    return rows
+
+
+def _collect_benchmark_report_rows(
+    report_dir: Path,
+    *,
+    included_sources: tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    """Collect filtered benchmark rows from ``benchmark_reports`` CSV files."""
+    selected_sources = included_sources or _default_benchmark_report_sources()
+    selected_set = set(selected_sources)
+    collected_rows: list[dict[str, Any]] = []
+
+    for path in sorted(report_dir.glob("*.csv")):
+        parts = path.stem.split("__")
+        if len(parts) < 3:
+            continue
+        source_name = parts[1]
+        model_name = parts[0]
+        if source_name not in selected_set:
+            continue
+
+        for row in _read_benchmark_report_rows(path):
+            if row.get("status") != "completed":
+                continue
+            if not str(row.get("llm_output", "")).strip():
+                continue
+            collected_rows.append(
+                {
+                    **row,
+                    "source_name": source_name,
+                    "model": model_name,
+                }
+            )
+
+    return collected_rows
+
+
+def _average_scores_by_model_for_source(
+    report_dir: Path,
+    source_name: str,
+) -> dict[str, float]:
+    """Calculate per-model average scores for one benchmark source."""
+    rows = _collect_benchmark_report_rows(
+        report_dir,
+        included_sources=(source_name,),
+    )
+    by_model: dict[str, list[float]] = {}
+    for row in rows:
+        model_name = str(row.get("model", ""))
+        if not model_name:
+            continue
+        by_model.setdefault(model_name, []).append(float(row.get("score", 0.0)))
+
+    return {
+        model_name: _average_float(scores)
+        for model_name, scores in by_model.items()
+    }
+
+
+def _append_source_column_to_text_report(
+    existing_txt_path: Path,
+    *,
+    report_dir: Path,
+    source_name: str,
+) -> Path:
+    """Create an additive TXT report variant with one extra source column."""
+    if not existing_txt_path.exists():
+        raise FileNotFoundError(existing_txt_path)
+
+    derived_path = _safe_output_path(
+        report_dir,
+        f"{existing_txt_path.stem}_{source_name}{existing_txt_path.suffix}",
+    )
+    existing_content = existing_txt_path.read_text(encoding="utf-8")
+    lines = existing_content.splitlines()
+    source_model_scores = _average_scores_by_model_for_source(report_dir, source_name)
+
+    if not lines:
+        lines = [f"Model | {source_name}"]
+    elif "Model Summary" not in lines and "Overall Winners" not in lines:
+        # Fallback for simple one-table text files used by compatibility tests.
+        header = lines[0]
+        if source_name not in header:
+            lines[0] = f"{header} | {source_name}"
+        for index in range(1, len(lines)):
+            if "|" in lines[index] and lines[index].strip():
+                lines[index] = f"{lines[index]} | "
+    else:
+        lines = _add_column_to_section_table(
+            lines,
+            section_title="Model Summary",
+            column_name=source_name,
+            value_by_row=lambda cells: (
+                f"{source_model_scores[cells[0]]:.4f}"
+                if cells and cells[0] in source_model_scores
+                else ""
+            ),
+        )
+        lines = _add_column_to_section_table(
+            lines,
+            section_title="Overall Winners",
+            column_name=source_name,
+            value_by_row=lambda cells: (
+                ""
+                if cells and cells[0] == "Fastest average runtime"
+                else (
+                    f"{source_model_scores[cells[1]]:.4f}"
+                    if len(cells) > 1 and cells[1] in source_model_scores
+                    else ""
+                )
+            ),
+        )
+
+    derived_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return derived_path
+
+
+def _add_column_to_section_table(
+    lines: list[str],
+    *,
+    section_title: str,
+    column_name: str,
+    value_by_row: Any,
+) -> list[str]:
+    """Add one column to a section table and re-render it for clean alignment."""
+    section_index = _find_line_index(lines, section_title)
+    if section_index is None:
+        return lines
+
+    table_start = _find_table_start(lines, section_index + 1)
+    if table_start is None or table_start + 2 >= len(lines):
+        return lines
+
+    header_cells = _table_cells(lines[table_start + 1])
+    if not header_cells:
+        return lines
+
+    headers = list(header_cells)
+    if column_name in headers:
+        column_index = headers.index(column_name)
+    else:
+        headers.append(column_name)
+        column_index = len(headers) - 1
+
+    row_start = table_start + 3
+    table_end = _find_table_end(lines, row_start)
+    if table_end is None:
+        return lines
+
+    rows: list[list[str]] = []
+    for raw_line in lines[row_start:table_end]:
+        cells = _table_cells(raw_line)
+        if not cells:
+            continue
+        row_cells = list(cells)
+        while len(row_cells) < len(headers):
+            row_cells.append("")
+        row_cells[column_index] = str(value_by_row(cells))
+        rows.append(row_cells[: len(headers)])
+
+    rendered = _format_table(headers, rows).splitlines()
+    return [*lines[:table_start], *rendered, *lines[table_end + 1 :]]
+
+
+def _find_line_index(lines: list[str], target: str) -> int | None:
+    for index, line in enumerate(lines):
+        if line.strip() == target:
+            return index
+    return None
+
+
+def _find_table_start(lines: list[str], start: int) -> int | None:
+    for index in range(start, len(lines)):
+        if lines[index].strip().startswith("+-"):
+            return index
+    return None
+
+
+def _find_table_end(lines: list[str], start: int) -> int | None:
+    for index in range(start, len(lines)):
+        if lines[index].strip().startswith("+-"):
+            return index
+    return None
+
+
+def _table_cells(line: str) -> list[str]:
+    stripped = line.strip()
+    if not stripped.startswith("|"):
+        return []
+    return [cell.strip() for cell in stripped.strip("|").split("|")]
 
 
 def _merge_overall_rows(
