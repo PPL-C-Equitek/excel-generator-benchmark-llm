@@ -40,8 +40,8 @@ DEFAULT_EXAMPLE_DIRS = (
     "like-real.examples",
 )
 DEFAULT_DATA_DIR = "data"
-DEFAULT_REPORT_DIR = f"benchmark_reports"
-DEFAULT_RUNTIME_DATASET_DIR = f"benchmark_runtime_datasets"
+DEFAULT_REPORT_DIR = "benchmark_reports"
+DEFAULT_RUNTIME_DATASET_DIR = "benchmark_runtime_datasets"
 OVERALL_REPORT_FILENAME = "overall_benchmark_report.csv"
 OVERALL_TEXT_REPORT_FILENAME = "overall_benchmark_report.txt"
 CSV_ENCODING = "utf-8-sig"
