@@ -427,7 +427,7 @@ def test_default_env_helpers_and_path_resolution(tmp_path, monkeypatch):
         tmp_path / example_dir for example_dir in main_module.DEFAULT_EXAMPLE_DIRS
     ]
     assert absolute_path == tmp_path / "already-absolute"
-    assert main_module.DEFAULT_REPORT_DIR == "data/benchmark_reports"
+    assert main_module.DEFAULT_REPORT_DIR == "benchmark_reports"
 
 
 def test_display_path_prefers_project_relative_and_falls_back_to_absolute(
