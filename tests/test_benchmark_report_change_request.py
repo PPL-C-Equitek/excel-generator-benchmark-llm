@@ -276,6 +276,22 @@ def test_append_source_column_rejects_existing_text_path_outside_project(monkeyp
         )
 
 
+def test_read_benchmark_report_rows_rejects_path_outside_project(monkeypatch):
+    fake_project_root = Path.cwd().resolve() / "repo-root"
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", fake_project_root)
+
+    with pytest.raises(ValueError, match="benchmark report path"):
+        main_module._read_benchmark_report_rows(Path("D:/outside/report.csv"))
+
+
+def test_read_overall_report_rows_rejects_path_outside_project(monkeypatch):
+    fake_project_root = Path.cwd().resolve() / "repo-root"
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", fake_project_root)
+
+    with pytest.raises(ValueError, match="overall report path"):
+        main_module._read_overall_report_rows(Path("D:/outside/overall.csv"))
+
+
 def test_append_source_column_handles_empty_existing_text_file():
     tmp_path = _sandbox_dir("empty_text")
     report_dir = tmp_path / "benchmark_reports"
@@ -397,6 +413,88 @@ def test_derived_text_report_path_rejects_base_dir_outside_project(monkeypatch):
     outside_dir = Path("D:/outside-report-dir")
     with pytest.raises(ValueError, match="must stay inside the project directory"):
         main_module._derived_text_report_path(report_dir=outside_dir)
+
+
+def test_derived_text_report_path_rejects_when_commonpath_fails_on_derived_check(
+    monkeypatch,
+):
+    tmp_path = _sandbox_dir("derived_path_commonpath_failure")
+    report_dir = tmp_path / "benchmark_reports"
+    report_dir.mkdir()
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+
+    original_commonpath = main_module.os.path.commonpath
+    call_count = {"value": 0}
+
+    def _commonpath_with_second_call_failure(paths):
+        call_count["value"] += 1
+        if call_count["value"] == 2:
+            raise ValueError("forced commonpath failure")
+        return original_commonpath(paths)
+
+    monkeypatch.setattr(
+        main_module.os.path,
+        "commonpath",
+        _commonpath_with_second_call_failure,
+    )
+
+    with pytest.raises(ValueError, match="escapes the output directory"):
+        main_module._derived_text_report_path(report_dir=report_dir)
+
+
+def test_write_derived_text_report_writes_fixed_filename():
+    tmp_path = _sandbox_dir("write_derived_path")
+    report_dir = tmp_path / "benchmark_reports"
+    report_dir.mkdir()
+
+    output_path = main_module._write_derived_text_report(
+        report_dir=report_dir,
+        content="hello\n",
+    )
+
+    assert output_path.name == "overall_benchmark_report_source_augmented.txt"
+    assert output_path.read_text(encoding="utf-8") == "hello\n"
+
+
+def test_write_derived_text_report_rejects_when_commonpath_fails_on_derived_check(
+    monkeypatch,
+):
+    tmp_path = _sandbox_dir("write_derived_commonpath_failure")
+    report_dir = tmp_path / "benchmark_reports"
+    report_dir.mkdir()
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+
+    original_commonpath = main_module.os.path.commonpath
+    call_count = {"value": 0}
+
+    def _commonpath_with_second_call_failure(paths):
+        call_count["value"] += 1
+        if call_count["value"] == 2:
+            raise ValueError("forced commonpath failure")
+        return original_commonpath(paths)
+
+    monkeypatch.setattr(
+        main_module.os.path,
+        "commonpath",
+        _commonpath_with_second_call_failure,
+    )
+
+    with pytest.raises(ValueError, match="escapes the output directory"):
+        main_module._write_derived_text_report(
+            report_dir=report_dir,
+            content="hello\n",
+        )
+
+
+def test_write_derived_text_report_rejects_base_dir_outside_project(monkeypatch):
+    fake_project_root = Path.cwd().resolve() / "repo-root"
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", fake_project_root)
+
+    with pytest.raises(ValueError, match="must stay inside the project directory"):
+        main_module._write_derived_text_report(
+            report_dir=Path("D:/outside-report-dir"),
+            content="x\n",
+        )
 
 
 def test_model_summary_source_score_handles_missing_inputs():

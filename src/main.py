@@ -279,10 +279,15 @@ def _example_dirs_from_env() -> list[Path]:
         Ordered list of absolute example folder paths.
     """
     raw_example_dirs = os.getenv("EXAMPLE_DIRS")
-    if raw_example_dirs:
-        return [_project_path(value) for value in _csv_env_values(raw_example_dirs)]
-
-    return [_project_path(value) for value in DEFAULT_EXAMPLE_DIRS]
+    raw_values = (
+        _csv_env_values(raw_example_dirs)
+        if raw_example_dirs
+        else list(DEFAULT_EXAMPLE_DIRS)
+    )
+    return [
+        _ensure_project_child(_project_path(value), "EXAMPLE_DIRS")
+        for value in raw_values
+    ]
 
 
 def _csv_env_values(raw_value: str) -> list[str]:
@@ -665,8 +670,9 @@ def _read_ground_truth_rows(path: Path) -> list[dict[str, Any]]:
     Returns:
         List of normalized row dictionaries.
     """
+    safe_path = _ensure_project_child(path, "ground truth csv path")
     rows: list[dict[str, Any]] = []
-    with path.open("r", newline="", encoding=CSV_ENCODING) as file:
+    with safe_path.open("r", newline="", encoding=CSV_ENCODING) as file:
         for row in csv.DictReader(file):
             clean_row = {key.strip(): value.strip() for key, value in row.items()}
             clean_row["value"] = int(clean_row["value"])
@@ -844,7 +850,8 @@ def _write_overall_report_with_merge(
 
 def _read_overall_report_rows(path: Path) -> list[dict[str, str]]:
     """Read an existing overall benchmark report."""
-    with path.open("r", newline="", encoding=CSV_ENCODING) as file:
+    safe_path = _ensure_project_child(path, "overall report path")
+    with safe_path.open("r", newline="", encoding=CSV_ENCODING) as file:
         return list(csv.DictReader(file))
 
 
@@ -858,8 +865,9 @@ def _default_benchmark_report_sources() -> tuple[str, ...]:
 
 def _read_benchmark_report_rows(path: Path) -> list[dict[str, Any]]:
     """Read benchmark CSV rows and parse ``llm_output`` safely."""
+    safe_path = _ensure_project_child(path, "benchmark report path")
     rows: list[dict[str, Any]] = []
-    with path.open("r", newline="", encoding="utf-8") as file:
+    with safe_path.open("r", newline="", encoding="utf-8") as file:
         for row in csv.DictReader(file):
             llm_output = (row.get("llm_output") or "").strip()
             parsed_llm_output: dict[str, Any] = {}
@@ -949,10 +957,21 @@ def _append_source_column_to_text_report(
     (for example ``overall_benchmark_report_source_augmented.txt``) so
     historical reports stay intact.
     """
-    safe_existing_txt_path = _ensure_project_child(
-        existing_txt_path,
-        "existing text report path",
-    )
+    project_root_real = os.path.realpath(str(PROJECT_ROOT.resolve()))
+    existing_path_real = os.path.realpath(str(existing_txt_path))
+    try:
+        inside_project = (
+            os.path.commonpath([project_root_real, existing_path_real])
+            == project_root_real
+        )
+    except ValueError:
+        inside_project = False
+    if not inside_project:
+        raise ValueError(
+            "existing text report path must stay inside the project directory: "
+            f"{existing_path_real}"
+        )
+    safe_existing_txt_path = Path(existing_path_real)
     if not safe_existing_txt_path.exists():
         raise FileNotFoundError(safe_existing_txt_path)
 
@@ -964,7 +983,7 @@ def _append_source_column_to_text_report(
         source_name=source_name,
     )
     return _write_derived_text_report(
-        report_dir=report_dir,
+        report_dir=safe_existing_txt_path.parent,
         content="\n".join(lines) + "\n",
     )
 
@@ -974,19 +993,31 @@ def _derived_text_report_path(
     report_dir: Path,
 ) -> Path:
     """Build a validated derived TXT path for additive report output."""
-    # Use a fixed filename to avoid constructing output paths from user-
-    # controlled values. Then enforce canonical base-dir confinement.
-    safe_base_dir = report_dir.resolve()
-    project_root = PROJECT_ROOT.resolve()
-    if not safe_base_dir.is_relative_to(project_root):
+    project_root_real = os.path.realpath(str(PROJECT_ROOT.resolve()))
+    base_dir_real = os.path.realpath(str(report_dir))
+    try:
+        base_inside_project = (
+            os.path.commonpath([project_root_real, base_dir_real]) == project_root_real
+        )
+    except ValueError:
+        base_inside_project = False
+    if not base_inside_project:
         raise ValueError(
             f"output directory must stay inside the project directory: "
-            f"{safe_base_dir}"
+            f"{base_dir_real}"
         )
-    derived_path = (safe_base_dir / DERIVED_TEXT_REPORT_FILENAME).resolve()
-    if not derived_path.is_relative_to(safe_base_dir):
+    derived_path_real = os.path.realpath(
+        str(Path(base_dir_real) / DERIVED_TEXT_REPORT_FILENAME)
+    )
+    try:
+        derived_inside_base = (
+            os.path.commonpath([base_dir_real, derived_path_real]) == base_dir_real
+        )
+    except ValueError:
+        derived_inside_base = False
+    if not derived_inside_base:
         raise ValueError("Derived text report path escapes the output directory.")
-    return derived_path
+    return Path(derived_path_real)
 
 
 def _write_derived_text_report(
@@ -995,9 +1026,35 @@ def _write_derived_text_report(
     content: str,
 ) -> Path:
     """Write derived additive TXT output to a fixed safe report path."""
-    derived_path = _safe_output_path(report_dir, DERIVED_TEXT_REPORT_FILENAME)
-    derived_path.write_text(content, encoding="utf-8")
-    return derived_path
+    project_root_real = os.path.realpath(str(PROJECT_ROOT.resolve()))
+    base_dir_real = os.path.realpath(str(report_dir))
+    try:
+        base_inside_project = (
+            os.path.commonpath([project_root_real, base_dir_real]) == project_root_real
+        )
+    except ValueError:
+        base_inside_project = False
+    if not base_inside_project:
+        raise ValueError(
+            "output directory must stay inside the project directory: "
+            f"{base_dir_real}"
+        )
+
+    derived_path_real = os.path.realpath(
+        str(Path(base_dir_real) / DERIVED_TEXT_REPORT_FILENAME)
+    )
+    try:
+        derived_inside_base = (
+            os.path.commonpath([base_dir_real, derived_path_real]) == base_dir_real
+        )
+    except ValueError:
+        derived_inside_base = False
+    if not derived_inside_base:
+        raise ValueError("Derived text report path escapes the output directory.")
+
+    with Path(derived_path_real).open("w", encoding="utf-8") as report_file:
+        report_file.write(content)
+    return Path(derived_path_real)
 
 
 def _with_source_column_added(
