@@ -949,20 +949,24 @@ def _append_source_column_to_text_report(
     (for example ``overall_benchmark_report_source_augmented.txt``) so
     historical reports stay intact.
     """
-    if not existing_txt_path.exists():
-        raise FileNotFoundError(existing_txt_path)
+    safe_existing_txt_path = _ensure_project_child(
+        existing_txt_path,
+        "existing text report path",
+    )
+    if not safe_existing_txt_path.exists():
+        raise FileNotFoundError(safe_existing_txt_path)
 
-    derived_path = _derived_text_report_path(report_dir=report_dir)
-    existing_content = existing_txt_path.read_text(encoding="utf-8")
+    existing_content = safe_existing_txt_path.read_text(encoding="utf-8")
     lines = existing_content.splitlines()
     lines = _with_source_column_added(
         lines=lines,
         report_dir=report_dir,
         source_name=source_name,
     )
-
-    derived_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return derived_path
+    return _write_derived_text_report(
+        report_dir=report_dir,
+        content="\n".join(lines) + "\n",
+    )
 
 
 def _derived_text_report_path(
@@ -982,6 +986,17 @@ def _derived_text_report_path(
     derived_path = (safe_base_dir / DERIVED_TEXT_REPORT_FILENAME).resolve()
     if not derived_path.is_relative_to(safe_base_dir):
         raise ValueError("Derived text report path escapes the output directory.")
+    return derived_path
+
+
+def _write_derived_text_report(
+    *,
+    report_dir: Path,
+    content: str,
+) -> Path:
+    """Write derived additive TXT output to a fixed safe report path."""
+    derived_path = _safe_output_path(report_dir, DERIVED_TEXT_REPORT_FILENAME)
+    derived_path.write_text(content, encoding="utf-8")
     return derived_path
 
 

@@ -264,6 +264,18 @@ def test_append_source_column_raises_when_base_text_missing():
         )
 
 
+def test_append_source_column_rejects_existing_text_path_outside_project(monkeypatch):
+    fake_project_root = Path.cwd().resolve() / "repo-root"
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", fake_project_root)
+
+    with pytest.raises(ValueError, match="existing text report path"):
+        main_module._append_source_column_to_text_report(
+            Path("D:/outside/overall_benchmark_report.txt"),
+            report_dir=Path.cwd(),
+            source_name="synthetic_examples_lanjutan",
+        )
+
+
 def test_append_source_column_handles_empty_existing_text_file():
     tmp_path = _sandbox_dir("empty_text")
     report_dir = tmp_path / "benchmark_reports"
