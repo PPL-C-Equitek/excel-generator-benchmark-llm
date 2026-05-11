@@ -193,6 +193,24 @@ def test_new_source_column_is_added_additively_to_existing_text_report():
     assert "synthetic_examples_lanjutan" in header
 
 
+def test_simple_fallback_adds_source_score_values_when_available():
+    lines = [
+        "Model | synthetic_examples",
+        "model-a | 0.50",
+        "model-b | 0.25",
+    ]
+
+    updated = main_module._append_source_column_to_simple_lines(
+        lines,
+        "synthetic_examples_lanjutan",
+        source_model_scores={"model-a": 0.75},
+    )
+
+    assert updated[0].endswith("synthetic_examples_lanjutan")
+    assert updated[1].endswith("| 0.7500")
+    assert updated[2].endswith("| ")
+
+
 def test_project_path_returns_absolute_path_unchanged():
     absolute_path = Path.cwd().resolve()
 
@@ -722,5 +740,18 @@ def test_filename_source_extractor_handles_invalid_and_valid_names():
         is None
     )
     assert main_module._model_and_source_from_report_filename(
+        Path("model-a__synthetic_examples.csv")
+    ) == ("model-a", "synthetic_examples")
+    assert main_module._model_and_source_from_report_filename(
         Path("model-a__synthetic_examples__ex01.csv")
     ) == ("model-a", "synthetic_examples")
+
+
+def test_has_full_report_sections_tolerates_whitespace_padding():
+    lines = [
+        "  Model Summary  ",
+        "some content",
+        "Overall Winners ",
+    ]
+
+    assert main_module._has_full_report_sections(lines) is True

@@ -1069,7 +1069,11 @@ def _with_source_column_added(
     if not lines:
         return [f"Model | {source_name}"]
     if not _has_full_report_sections(lines):
-        return _append_source_column_to_simple_lines(lines, source_name)
+        return _append_source_column_to_simple_lines(
+            lines,
+            source_name,
+            source_model_scores=source_model_scores,
+        )
 
     return _append_source_column_to_full_report(
         lines=lines,
@@ -1081,6 +1085,8 @@ def _with_source_column_added(
 def _append_source_column_to_simple_lines(
     lines: list[str],
     source_name: str,
+    *,
+    source_model_scores: dict[str, float],
 ) -> list[str]:
     """Fallback strategy for legacy/plain one-table text output."""
     updated_lines = list(lines)
@@ -1089,7 +1095,11 @@ def _append_source_column_to_simple_lines(
         updated_lines[0] = f"{header} | {source_name}"
     for index in range(1, len(updated_lines)):
         if "|" in updated_lines[index] and updated_lines[index].strip():
-            updated_lines[index] = f"{updated_lines[index]} | "
+            row_cells = _table_cells(updated_lines[index])
+            model_name = row_cells[0] if row_cells else updated_lines[index].split("|")[0].strip()
+            score = source_model_scores.get(model_name)
+            score_value = f"{score:.4f}" if score is not None else ""
+            updated_lines[index] = f"{updated_lines[index]} | {score_value}"
     return updated_lines
 
 
@@ -1229,7 +1239,7 @@ def _model_and_source_from_report_filename(
 ) -> tuple[str, str] | None:
     """Extract model and source name from benchmark-report CSV filename."""
     parts = path.stem.split("__")
-    if len(parts) < 3:
+    if len(parts) < 2:
         return None
     return parts[0], parts[1]
 
@@ -1243,7 +1253,10 @@ def _is_completed_row_with_output(row: dict[str, Any]) -> bool:
 
 def _has_full_report_sections(lines: list[str]) -> bool:
     """Return whether the text report contains both key table sections."""
-    return all(section in lines for section in REPORT_SECTIONS_WITH_TABLES)
+    return all(
+        any(section in line for line in lines)
+        for section in REPORT_SECTIONS_WITH_TABLES
+    )
 
 
 def _merge_overall_rows(
