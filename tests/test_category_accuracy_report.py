@@ -339,6 +339,16 @@ def test_read_ground_truth_handles_malformed_json_and_non_object_root(tmp_path):
     assert report_module._read_ground_truth(non_object_root) == {}
 
 
+def test_read_ground_truth_handles_non_list_rows_and_non_dict_first_row(tmp_path):
+    rows_not_list = tmp_path / "rows_not_list.json"
+    rows_not_list.write_text(json.dumps({"rows": "bad"}), encoding="utf-8")
+    assert report_module._read_ground_truth(rows_not_list) == {}
+
+    first_row_not_dict = tmp_path / "first_row_not_dict.json"
+    first_row_not_dict.write_text(json.dumps({"rows": ["bad"]}), encoding="utf-8")
+    assert report_module._read_ground_truth(first_row_not_dict) == {}
+
+
 def test_extract_category_handles_missing_document_info():
     assert report_module._extract_category({}) == "unknown"
     assert report_module._extract_category({"document_info": []}) == "unknown"

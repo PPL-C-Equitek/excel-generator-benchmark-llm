@@ -252,9 +252,14 @@ def _read_ground_truth(runtime_path: Path) -> dict[str, Any]:
         return {}
 
     rows = payload.get("rows", [])
-    if not rows:
+    if not isinstance(rows, list) or not rows:
         return {}
-    expected_output = rows[0].get("expected_output", {})
+
+    first_row = rows[0]
+    if not isinstance(first_row, dict):
+        return {}
+
+    expected_output = first_row.get("expected_output", {})
     if not isinstance(expected_output, dict):
         return {}
     return expected_output
