@@ -395,27 +395,28 @@ def test_write_category_accuracy_reports_appends_recommendations_to_txt(
 def test_append_recommendations_returns_when_json_file_cannot_be_read(
     tmp_path,
 ):
-    missing_json = tmp_path / "missing_category_accuracy_report.json"
-    txt_path = tmp_path / "category_accuracy_report.txt"
+    report_dir = tmp_path / "reports"
+    report_dir.mkdir()
+    txt_path = report_dir / "category_accuracy_report.txt"
     txt_path.write_text("Category Accuracy Report\n", encoding="utf-8")
 
     main_module._append_recommendations_to_category_text_report(
-        category_json_path=missing_json,
-        category_txt_path=txt_path,
+        report_dir=report_dir,
     )
 
     assert txt_path.read_text(encoding="utf-8") == "Category Accuracy Report\n"
 
 
 def test_append_recommendations_returns_when_payload_is_not_dict(tmp_path):
-    json_path = tmp_path / "category_accuracy_report.json"
-    txt_path = tmp_path / "category_accuracy_report.txt"
+    report_dir = tmp_path / "reports"
+    report_dir.mkdir()
+    json_path = report_dir / "category_accuracy_report.json"
+    txt_path = report_dir / "category_accuracy_report.txt"
     json_path.write_text('["not-an-object"]', encoding="utf-8")
     txt_path.write_text("Category Accuracy Report\n", encoding="utf-8")
 
     main_module._append_recommendations_to_category_text_report(
-        category_json_path=json_path,
-        category_txt_path=txt_path,
+        report_dir=report_dir,
     )
 
     assert txt_path.read_text(encoding="utf-8") == "Category Accuracy Report\n"
@@ -424,8 +425,10 @@ def test_append_recommendations_returns_when_payload_is_not_dict(tmp_path):
 def test_append_recommendations_returns_when_text_report_cannot_be_read(
     tmp_path,
 ):
-    json_path = tmp_path / "category_accuracy_report.json"
-    missing_txt_path = tmp_path / "missing_category_accuracy_report.txt"
+    report_dir = tmp_path / "reports"
+    report_dir.mkdir()
+    json_path = report_dir / "category_accuracy_report.json"
+    missing_txt_path = report_dir / "category_accuracy_report.txt"
     json_path.write_text(
         json.dumps(
             {
@@ -438,8 +441,7 @@ def test_append_recommendations_returns_when_text_report_cannot_be_read(
     )
 
     main_module._append_recommendations_to_category_text_report(
-        category_json_path=json_path,
-        category_txt_path=missing_txt_path,
+        report_dir=report_dir,
     )
 
     assert not missing_txt_path.exists()
@@ -449,8 +451,10 @@ def test_append_recommendations_returns_when_text_report_write_fails(
     tmp_path,
     monkeypatch,
 ):
-    json_path = tmp_path / "category_accuracy_report.json"
-    txt_path = tmp_path / "category_accuracy_report.txt"
+    report_dir = tmp_path / "reports"
+    report_dir.mkdir()
+    json_path = report_dir / "category_accuracy_report.json"
+    txt_path = report_dir / "category_accuracy_report.txt"
     json_path.write_text(
         json.dumps(
             {
@@ -474,8 +478,7 @@ def test_append_recommendations_returns_when_text_report_write_fails(
     monkeypatch.setattr(Path, "write_text", failing_write_text)
 
     main_module._append_recommendations_to_category_text_report(
-        category_json_path=json_path,
-        category_txt_path=txt_path,
+        report_dir=report_dir,
     )
 
     assert txt_path.read_text(encoding="utf-8") == original_text
@@ -486,8 +489,7 @@ def test_append_recommendations_rejects_paths_outside_project(tmp_path, monkeypa
 
     with pytest.raises(ValueError, match="project directory"):
         main_module._append_recommendations_to_category_text_report(
-            category_json_path=Path("D:/outside/category_accuracy_report.json"),
-            category_txt_path=Path("D:/outside/category_accuracy_report.txt"),
+            report_dir=Path("D:/outside"),
         )
 
 

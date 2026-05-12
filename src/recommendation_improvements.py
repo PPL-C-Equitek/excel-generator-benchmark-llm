@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import TypeAlias
 
 
 DEFAULT_THRESHOLD = 0.70
@@ -19,8 +18,8 @@ ANALYSIS_UNAVAILABLE_MESSAGE = (
     "(gagal/timeout)."
 )
 
-AnalyzerFn: TypeAlias = Callable[[str, float], str]
-RankedCategory: TypeAlias = tuple[str, float]
+type AnalyzerFn = Callable[[str, float], str]
+type RankedCategory = tuple[str, float]
 
 
 def generate_recommendation_improvements(

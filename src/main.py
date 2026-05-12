@@ -241,16 +241,19 @@ def _write_category_accuracy_reports(
     runtime_dataset_dir: Path,
 ) -> dict[str, Path]:
     """Write category-accuracy JSON and TXT reports from existing artifacts."""
-    result = generate_category_accuracy_reports(
-        report_dir=report_dir,
-        runtime_dir=runtime_dataset_dir,
-        output_dir=report_dir,
+    safe_report_dir = _ensure_project_child(report_dir, "report directory")
+    safe_runtime_dataset_dir = _ensure_project_child(
+        runtime_dataset_dir,
+        "runtime dataset directory",
     )
-    json_path = Path(result["json_path"])
-    txt_path = Path(result["txt_path"])
+    generate_category_accuracy_reports(
+        report_dir=safe_report_dir,
+        runtime_dir=safe_runtime_dataset_dir,
+        output_dir=safe_report_dir,
+    )
+    json_path, txt_path = _category_accuracy_report_paths(safe_report_dir)
     _append_recommendations_to_category_text_report(
-        category_json_path=json_path,
-        category_txt_path=txt_path,
+        report_dir=safe_report_dir,
     )
     return {
         "json_path": json_path,
@@ -258,20 +261,20 @@ def _write_category_accuracy_reports(
     }
 
 
+def _category_accuracy_report_paths(report_dir: Path) -> tuple[Path, Path]:
+    """Return canonical JSON/TXT output paths for category-accuracy reports."""
+    safe_report_dir = _ensure_project_child(report_dir, "report directory")
+    json_path = safe_report_dir / "category_accuracy_report.json"
+    txt_path = safe_report_dir / "category_accuracy_report.txt"
+    return json_path, txt_path
+
+
 def _append_recommendations_to_category_text_report(
     *,
-    category_json_path: Path,
-    category_txt_path: Path,
+    report_dir: Path,
 ) -> None:
     """Append recommendation improvements section to category TXT report."""
-    safe_json_path = _ensure_project_child(
-        category_json_path,
-        "category accuracy json path",
-    )
-    safe_txt_path = _ensure_project_child(
-        category_txt_path,
-        "category accuracy txt path",
-    )
+    safe_json_path, safe_txt_path = _category_accuracy_report_paths(report_dir)
 
     try:
         payload = json.loads(safe_json_path.read_text(encoding="utf-8"))
