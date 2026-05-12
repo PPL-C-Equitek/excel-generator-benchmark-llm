@@ -235,6 +235,87 @@ def test_parse_report_filename_requires_model_and_source():
     )
 
 
+def test_resolve_report_context_applies_filename_and_filters():
+    assert (
+        report_module._resolve_report_context(
+            report_path=Path("overall_report.csv"),
+            source_filter="",
+            model_filter="",
+        )
+        is None
+    )
+    assert (
+        report_module._resolve_report_context(
+            report_path=Path("bad.csv"),
+            source_filter="",
+            model_filter="",
+        )
+        is None
+    )
+    assert (
+        report_module._resolve_report_context(
+            report_path=Path("model-a__source-x__case.csv"),
+            source_filter="source-y",
+            model_filter="",
+        )
+        is None
+    )
+    assert (
+        report_module._resolve_report_context(
+            report_path=Path("model-a__source-x__case.csv"),
+            source_filter="",
+            model_filter="model-b",
+        )
+        is None
+    )
+    assert report_module._resolve_report_context(
+        report_path=Path("model-a__source-x__case.csv"),
+        source_filter="source-x",
+        model_filter="model-a",
+    ) == ("model-a", "source-x")
+
+
+def test_completed_rows_to_evaluations_keeps_completed_only(tmp_path):
+    report_path = tmp_path / "model-a__source-x__case.csv"
+    _write_report_csv(
+        report_path,
+        [
+            {
+                "row_index": "1",
+                "status": "failed",
+                "score": "0.0",
+                "llm_output": '{"id":"X"}',
+                "error_message": "x",
+            },
+            {
+                "row_index": "2",
+                "status": "completed",
+                "score": "1.0",
+                "llm_output": '{"id":"A"}',
+                "error_message": "",
+            },
+        ],
+    )
+
+    evaluations = report_module._completed_rows_to_evaluations(
+        report_path=report_path,
+        model_name="model-a",
+        source_name="source-x",
+        category="Excel",
+        ground_truth={"id": "A"},
+    )
+
+    assert evaluations == [
+        {
+            "category": "Excel",
+            "model": "model-a",
+            "source": "source-x",
+            "ground_truth": {"id": "A"},
+            "llm_output": '{"id":"A"}',
+        }
+    ]
+
+
 def test_read_ground_truth_handles_missing_rows_and_non_dict_payload(tmp_path):
     no_rows = tmp_path / "no_rows.json"
     no_rows.write_text(json.dumps({"rows": []}), encoding="utf-8")

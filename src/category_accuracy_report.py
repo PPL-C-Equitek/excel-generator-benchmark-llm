@@ -152,45 +152,86 @@ def _collect_evaluations(
     source_filter: str,
     model_filter: str,
 ) -> list[dict[str, Any]]:
+    """Collect normalized evaluation rows from report/runtime artifacts."""
     evaluations: list[dict[str, Any]] = []
     source_filter = source_filter.strip()
     model_filter = model_filter.strip()
 
     for report_path in sorted(report_dir.glob("*.csv")):
-        if report_path.name.startswith("overall_"):
+        context = _resolve_report_context(
+            report_path=report_path,
+            source_filter=source_filter,
+            model_filter=model_filter,
+        )
+        if context is None:
             continue
 
-        parsed_name = _parse_report_filename(report_path.stem)
-        if parsed_name is None:
-            continue
-        model_name, source_name = parsed_name
-
-        if source_filter and source_name != source_filter:
-            continue
-        if model_filter and model_name != model_filter:
-            continue
-
+        model_name, source_name = context
         runtime_path = runtime_dir / f"{report_path.stem}.json"
         if not runtime_path.exists():
             continue
 
         ground_truth = _read_ground_truth(runtime_path)
         category = _extract_category(ground_truth)
+        evaluations.extend(
+            _completed_rows_to_evaluations(
+                report_path=report_path,
+                model_name=model_name,
+                source_name=source_name,
+                category=category,
+                ground_truth=ground_truth,
+            )
+        )
 
-        with report_path.open("r", newline="", encoding="utf-8") as csv_file:
-            for row in csv.DictReader(csv_file):
-                if row.get("status") != "completed":
-                    continue
-                evaluations.append(
-                    {
-                        "category": category,
-                        "model": model_name,
-                        "source": source_name,
-                        "ground_truth": ground_truth,
-                        "llm_output": row.get("llm_output", ""),
-                    }
-                )
+    return evaluations
 
+
+def _resolve_report_context(
+    *,
+    report_path: Path,
+    source_filter: str,
+    model_filter: str,
+) -> tuple[str, str] | None:
+    """Return ``(model_name, source_name)`` when report matches filters."""
+    if report_path.name.startswith("overall_"):
+        return None
+
+    parsed_name = _parse_report_filename(report_path.stem)
+    if parsed_name is None:
+        return None
+    model_name, source_name = parsed_name
+
+    if source_filter and source_name != source_filter:
+        return None
+    if model_filter and model_name != model_filter:
+        return None
+
+    return model_name, source_name
+
+
+def _completed_rows_to_evaluations(
+    *,
+    report_path: Path,
+    model_name: str,
+    source_name: str,
+    category: str,
+    ground_truth: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Convert completed CSV rows into evaluation payload dictionaries."""
+    evaluations: list[dict[str, Any]] = []
+    with report_path.open("r", newline="", encoding="utf-8") as csv_file:
+        for row in csv.DictReader(csv_file):
+            if row.get("status") != "completed":
+                continue
+            evaluations.append(
+                {
+                    "category": category,
+                    "model": model_name,
+                    "source": source_name,
+                    "ground_truth": ground_truth,
+                    "llm_output": row.get("llm_output", ""),
+                }
+            )
     return evaluations
 
 
