@@ -292,7 +292,7 @@ def _append_recommendations_to_category_text_report(
 
     try:
         existing_text = safe_txt_path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return
 
     separator = "\n" if existing_text.endswith("\n") else "\n\n"
@@ -322,9 +322,7 @@ def _extract_category_scores_for_recommendation(
             percent_value = float(raw_percent)
         except (TypeError, ValueError):
             continue
-        normalized_score = (
-            percent_value / 100.0 if percent_value > 1.0 else percent_value
-        )
+        normalized_score = percent_value / 100.0
         category_scores[str(category_name)] = max(0.0, min(1.0, normalized_score))
 
     return category_scores

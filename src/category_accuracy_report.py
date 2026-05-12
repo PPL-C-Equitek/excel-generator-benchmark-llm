@@ -219,19 +219,22 @@ def _completed_rows_to_evaluations(
 ) -> list[dict[str, Any]]:
     """Convert completed CSV rows into evaluation payload dictionaries."""
     evaluations: list[dict[str, Any]] = []
-    with report_path.open("r", newline="", encoding="utf-8") as csv_file:
-        for row in csv.DictReader(csv_file):
-            if row.get("status") != "completed":
-                continue
-            evaluations.append(
-                {
-                    "category": category,
-                    "model": model_name,
-                    "source": source_name,
-                    "ground_truth": ground_truth,
-                    "llm_output": row.get("llm_output", ""),
-                }
-            )
+    try:
+        with report_path.open("r", newline="", encoding="utf-8") as csv_file:
+            for row in csv.DictReader(csv_file):
+                if row.get("status") != "completed":
+                    continue
+                evaluations.append(
+                    {
+                        "category": category,
+                        "model": model_name,
+                        "source": source_name,
+                        "ground_truth": ground_truth,
+                        "llm_output": row.get("llm_output", ""),
+                    }
+                )
+    except (OSError, csv.Error):
+        return []
     return evaluations
 
 

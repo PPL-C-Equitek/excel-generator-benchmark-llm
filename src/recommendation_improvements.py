@@ -66,8 +66,6 @@ def generate_recommendation_improvements(
         for category, score in ranked_low_scores:
             recommendation = analyzer_fn(category, score)
             report_lines.append(f"- {category}: {recommendation}")
-    except (TimeoutError, RuntimeError, ValueError):
-        report_lines.extend(["", ANALYSIS_UNAVAILABLE_MESSAGE])
     except Exception:
         report_lines.extend(["", ANALYSIS_UNAVAILABLE_MESSAGE])
 

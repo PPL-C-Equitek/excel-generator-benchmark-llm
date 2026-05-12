@@ -333,7 +333,7 @@ def test_extract_category_scores_for_recommendation_normalizes_percent_values():
 
     assert result == {
         "invoice": pytest.approx(0.625),
-        "receipt": pytest.approx(1.0),
+        "receipt": pytest.approx(0.01),
     }
 
 
@@ -445,6 +445,32 @@ def test_append_recommendations_returns_when_text_report_cannot_be_read(
     )
 
     assert not missing_txt_path.exists()
+
+
+def test_append_recommendations_returns_when_text_report_is_not_utf8(
+    tmp_path,
+):
+    report_dir = tmp_path / "reports"
+    report_dir.mkdir()
+    json_path = report_dir / "category_accuracy_report.json"
+    txt_path = report_dir / "category_accuracy_report.txt"
+    json_path.write_text(
+        json.dumps(
+            {
+                "by_category": {
+                    "invoice": {"exact_accuracy_percent": 20.0},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    txt_path.write_bytes(b"\xff\xfe\xfd")
+
+    main_module._append_recommendations_to_category_text_report(
+        report_dir=report_dir,
+    )
+
+    assert txt_path.read_bytes() == b"\xff\xfe\xfd"
 
 
 def test_append_recommendations_returns_when_text_report_write_fails(

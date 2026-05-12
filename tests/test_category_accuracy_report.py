@@ -355,6 +355,26 @@ def test_completed_rows_to_evaluations_keeps_completed_only(tmp_path):
     ]
 
 
+def test_completed_rows_to_evaluations_returns_empty_on_csv_read_error(tmp_path, monkeypatch):
+    report_path = tmp_path / "model-a__source-x__case.csv"
+    report_path.write_text("status,llm_output\ncompleted,{}\n", encoding="utf-8")
+
+    def failing_open(*args, **kwargs):
+        raise OSError("cannot open csv")
+
+    monkeypatch.setattr(Path, "open", failing_open)
+
+    evaluations = report_module._completed_rows_to_evaluations(
+        report_path=report_path,
+        model_name="model-a",
+        source_name="source-x",
+        category="csv",
+        ground_truth={"id": "A"},
+    )
+
+    assert evaluations == []
+
+
 def test_read_ground_truth_handles_missing_rows_and_non_dict_payload(tmp_path):
     no_rows = tmp_path / "no_rows.json"
     no_rows.write_text(json.dumps({"rows": []}), encoding="utf-8")
