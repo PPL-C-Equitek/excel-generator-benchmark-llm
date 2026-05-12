@@ -217,6 +217,8 @@ def test_main_runs_configured_models_and_example_dirs(
     assert (tmp_path / "runtime").is_dir()
     assert (tmp_path / "reports" / "overall_benchmark_report.csv").is_file()
     assert (tmp_path / "reports" / "overall_benchmark_report.txt").is_file()
+    assert (tmp_path / "reports" / "category_accuracy_report.json").is_file()
+    assert (tmp_path / "reports" / "category_accuracy_report.txt").is_file()
 
 
 def test_main_uses_merge_path_when_merge_base_report_is_set(
@@ -248,6 +250,43 @@ def test_main_uses_merge_path_when_merge_base_report_is_set(
     run_batch.assert_called_once()
     write_merged.assert_called_once()
     write_text.assert_called_once()
+    print_summary.assert_called_once()
+
+
+def test_main_passes_preserve_flag_when_enabled(
+    tmp_path,
+    monkeypatch,
+    mocker,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setenv("PRESERVE_OVERALL_REPORTS", "1")
+    discover_cases = mocker.patch(
+        "src.main._discover_example_cases",
+        return_value=([], []),
+    )
+    run_batch = mocker.patch("src.main._run_batch", return_value=[])
+    write_overall = mocker.patch(
+        "src.main._write_overall_report",
+        return_value=tmp_path / "reports" / "overall_benchmark_report_1.csv",
+    )
+    write_text = mocker.patch(
+        "src.main._write_overall_text_report",
+        return_value=tmp_path / "reports" / "overall_benchmark_report_1.txt",
+    )
+    print_summary = mocker.patch("src.main._print_batch_summary")
+
+    exit_code = main_module.main()
+
+    assert exit_code == 0
+    discover_cases.assert_called_once()
+    run_batch.assert_called_once()
+    write_overall.assert_called_once_with(
+        [],
+        tmp_path / main_module.DEFAULT_REPORT_DIR,
+        preserve_existing=True,
+    )
+    write_text.assert_called_once()
+    assert write_text.call_args.kwargs["preserve_existing"] is True
     print_summary.assert_called_once()
 
 
@@ -377,6 +416,24 @@ def test_write_overall_report_compares_files_and_models(tmp_path, monkeypatch):
     assert overall_rows["overall_fastest"]["model"] == "model-a"
 
 
+def test_write_overall_report_preserves_existing_file_when_enabled(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    existing_path = tmp_path / "overall_benchmark_report.csv"
+    existing_path.write_text("existing", encoding="utf-8")
+
+    report_path = main_module._write_overall_report(
+        batch_results=[],
+        report_dir=tmp_path,
+        preserve_existing=True,
+    )
+
+    assert report_path == tmp_path / "overall_benchmark_report_1.csv"
+    assert existing_path.read_text(encoding="utf-8") == "existing"
+
+
 def test_write_overall_text_report_contains_readable_tables(tmp_path, monkeypatch):
     monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
     batch_results = [
@@ -413,21 +470,62 @@ def test_write_overall_text_report_contains_readable_tables(tmp_path, monkeypatc
     assert "+-" in content
 
 
+def test_write_overall_text_report_preserves_existing_file_when_enabled(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    existing_path = tmp_path / "overall_benchmark_report.txt"
+    existing_path.write_text("existing", encoding="utf-8")
+
+    report_path = main_module._write_overall_text_report(
+        batch_results=[],
+        report_dir=tmp_path,
+        preserve_existing=True,
+    )
+
+    assert report_path == tmp_path / "overall_benchmark_report_1.txt"
+    assert existing_path.read_text(encoding="utf-8") == "existing"
+
+
 def test_default_env_helpers_and_path_resolution(tmp_path, monkeypatch):
     monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
     monkeypatch.delenv("MODEL_NAMES", raising=False)
     monkeypatch.delenv("EXAMPLE_DIRS", raising=False)
+    monkeypatch.delenv("PRESERVE_OVERALL_REPORTS", raising=False)
 
     model_names = main_module._model_names_from_env()
     example_dirs = main_module._example_dirs_from_env()
+    preserve_overall_reports = main_module._preserve_overall_reports_from_env()
     absolute_path = main_module._project_path(tmp_path / "already-absolute")
 
     assert model_names == list(main_module.DEFAULT_MODEL_NAMES)
     assert example_dirs == [
         tmp_path / example_dir for example_dir in main_module.DEFAULT_EXAMPLE_DIRS
     ]
+    assert preserve_overall_reports is False
     assert absolute_path == tmp_path / "already-absolute"
     assert main_module.DEFAULT_REPORT_DIR == "benchmark_reports"
+
+
+@pytest.mark.parametrize("raw_value", ["1", "true", "TRUE", "yes", "on"])
+def test_preserve_overall_reports_from_env_handles_truthy_values(
+    raw_value,
+    monkeypatch,
+):
+    monkeypatch.setenv("PRESERVE_OVERALL_REPORTS", raw_value)
+
+    assert main_module._preserve_overall_reports_from_env() is True
+
+
+def test_preserve_overall_reports_from_env_handles_falsy_and_missing_values(
+    monkeypatch,
+):
+    monkeypatch.setenv("PRESERVE_OVERALL_REPORTS", "0")
+    assert main_module._preserve_overall_reports_from_env() is False
+
+    monkeypatch.delenv("PRESERVE_OVERALL_REPORTS", raising=False)
+    assert main_module._preserve_overall_reports_from_env() is False
 
 
 def test_example_dirs_from_env_rejects_path_outside_project(tmp_path, monkeypatch):
@@ -628,7 +726,11 @@ def test_write_overall_report_with_merge_falls_back_when_base_missing(
         tmp_path / "missing.csv",
     )
 
-    write_overall_report.assert_called_once_with(batch_results, report_dir)
+    write_overall_report.assert_called_once_with(
+        batch_results,
+        report_dir,
+        preserve_existing=False,
+    )
     assert merged_path == report_dir / "overall_benchmark_report.csv"
 
 
