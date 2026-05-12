@@ -427,7 +427,23 @@ def test_default_env_helpers_and_path_resolution(tmp_path, monkeypatch):
         tmp_path / example_dir for example_dir in main_module.DEFAULT_EXAMPLE_DIRS
     ]
     assert absolute_path == tmp_path / "already-absolute"
-    assert main_module.DEFAULT_REPORT_DIR == "data/benchmark_reports"
+    assert main_module.DEFAULT_REPORT_DIR == "benchmark_reports"
+
+
+def test_example_dirs_from_env_rejects_path_outside_project(tmp_path, monkeypatch):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    outside_project = tmp_path.parent / "outside_examples"
+    monkeypatch.setenv("EXAMPLE_DIRS", str(outside_project))
+
+    with pytest.raises(ValueError, match="EXAMPLE_DIRS"):
+        main_module._example_dirs_from_env()
+
+
+def test_read_ground_truth_rows_rejects_path_outside_project(tmp_path, monkeypatch):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+
+    with pytest.raises(ValueError, match="ground truth csv path"):
+        main_module._read_ground_truth_rows(Path("D:/outside/output.csv"))
 
 
 def test_display_path_prefers_project_relative_and_falls_back_to_absolute(

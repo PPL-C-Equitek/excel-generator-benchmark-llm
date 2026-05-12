@@ -9,6 +9,7 @@ import re
 import sys
 import time
 from collections.abc import Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -39,8 +40,8 @@ DEFAULT_EXAMPLE_DIRS = (
     "like-real.examples",
 )
 DEFAULT_DATA_DIR = "data"
-DEFAULT_REPORT_DIR = f"{DEFAULT_DATA_DIR}/benchmark_reports"
-DEFAULT_RUNTIME_DATASET_DIR = f"{DEFAULT_DATA_DIR}/benchmark_runtime_datasets"
+DEFAULT_REPORT_DIR = "benchmark_reports"
+DEFAULT_RUNTIME_DATASET_DIR = "benchmark_runtime_datasets"
 OVERALL_REPORT_FILENAME = "overall_benchmark_report.csv"
 OVERALL_TEXT_REPORT_FILENAME = "overall_benchmark_report.txt"
 CSV_ENCODING = "utf-8-sig"
@@ -60,6 +61,15 @@ OVERALL_REPORT_FIELDNAMES = [
     "total_runs",
     "completed_runs",
 ]
+# Default source filter for benchmark-report ingestion:
+# include only `synthetic_examples` unless caller overrides it explicitly.
+DEFAULT_BENCHMARK_REPORT_SOURCES = ("synthetic_examples",)
+REPORT_COMPLETED_STATUS = "completed"
+MODEL_SUMMARY_TITLE = "Model Summary"
+OVERALL_WINNERS_TITLE = "Overall Winners"
+REPORT_SECTIONS_WITH_TABLES = (MODEL_SUMMARY_TITLE, OVERALL_WINNERS_TITLE)
+OVERALL_WINNER_FASTEST_LABEL = "Fastest average runtime"
+DERIVED_TEXT_REPORT_FILENAME = "overall_benchmark_report_source_augmented.txt"
 SYSTEM_PROMPT = """
 You are a document parsing assistant.
 
@@ -269,10 +279,15 @@ def _example_dirs_from_env() -> list[Path]:
         Ordered list of absolute example folder paths.
     """
     raw_example_dirs = os.getenv("EXAMPLE_DIRS")
-    if raw_example_dirs:
-        return [_project_path(value) for value in _csv_env_values(raw_example_dirs)]
-
-    return [_project_path(value) for value in DEFAULT_EXAMPLE_DIRS]
+    raw_values = (
+        _csv_env_values(raw_example_dirs)
+        if raw_example_dirs
+        else list(DEFAULT_EXAMPLE_DIRS)
+    )
+    return [
+        _ensure_project_child(_project_path(value), "EXAMPLE_DIRS")
+        for value in raw_values
+    ]
 
 
 def _csv_env_values(raw_value: str) -> list[str]:
@@ -655,8 +670,9 @@ def _read_ground_truth_rows(path: Path) -> list[dict[str, Any]]:
     Returns:
         List of normalized row dictionaries.
     """
+    safe_path = _ensure_project_child(path, "ground truth csv path")
     rows: list[dict[str, Any]] = []
-    with path.open("r", newline="", encoding=CSV_ENCODING) as file:
+    with safe_path.open("r", newline="", encoding=CSV_ENCODING) as file:
         for row in csv.DictReader(file):
             clean_row = {key.strip(): value.strip() for key, value in row.items()}
             clean_row["value"] = int(clean_row["value"])
@@ -834,8 +850,413 @@ def _write_overall_report_with_merge(
 
 def _read_overall_report_rows(path: Path) -> list[dict[str, str]]:
     """Read an existing overall benchmark report."""
-    with path.open("r", newline="", encoding=CSV_ENCODING) as file:
+    safe_path = _ensure_project_child(path, "overall report path")
+    with safe_path.open("r", newline="", encoding=CSV_ENCODING) as file:
         return list(csv.DictReader(file))
+
+
+def _default_benchmark_report_sources() -> tuple[str, ...]:
+    """Return default benchmark report sources to include.
+
+    The default is intentionally narrow: only ``synthetic_examples``.
+    """
+    return DEFAULT_BENCHMARK_REPORT_SOURCES
+
+
+def _read_benchmark_report_rows(path: Path) -> list[dict[str, Any]]:
+    """Read benchmark CSV rows and parse ``llm_output`` safely."""
+    safe_path = _ensure_project_child(path, "benchmark report path")
+    rows: list[dict[str, Any]] = []
+    with safe_path.open("r", newline="", encoding="utf-8") as file:
+        for row in csv.DictReader(file):
+            llm_output = (row.get("llm_output") or "").strip()
+            parsed_llm_output: dict[str, Any] = {}
+            if llm_output:
+                try:
+                    parsed = json.loads(llm_output)
+                    if isinstance(parsed, dict):
+                        parsed_llm_output = parsed
+                except json.JSONDecodeError:
+                    parsed_llm_output = {}
+
+            rows.append(
+                {
+                    **row,
+                    "row_index": int(row.get("row_index", 0) or 0),
+                    "parsed_llm_output": parsed_llm_output,
+                }
+            )
+
+    return rows
+
+
+def _collect_benchmark_report_rows(
+    report_dir: Path,
+    *,
+    included_sources: tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    """Collect filtered benchmark rows from ``benchmark_reports`` CSV files."""
+    selected_sources = included_sources or _default_benchmark_report_sources()
+    selected_set = set(selected_sources)
+    collected_rows: list[dict[str, Any]] = []
+
+    for path in sorted(report_dir.glob("*.csv")):
+        name_parts = _model_and_source_from_report_filename(path)
+        if name_parts is None:
+            continue
+        model_name, source_name = name_parts
+        if source_name not in selected_set:
+            continue
+
+        for row in _read_benchmark_report_rows(path):
+            if not _is_completed_row_with_output(row):
+                continue
+            collected_rows.append(
+                {
+                    **row,
+                    "source_name": source_name,
+                    "model": model_name,
+                }
+            )
+
+    return collected_rows
+
+
+def _average_scores_by_model_for_source(
+    report_dir: Path,
+    source_name: str,
+) -> dict[str, float]:
+    """Calculate per-model average scores for one benchmark source."""
+    rows = _collect_benchmark_report_rows(
+        report_dir,
+        included_sources=(source_name,),
+    )
+    by_model: dict[str, list[float]] = {}
+    for row in rows:
+        model_name = str(row.get("model", ""))
+        if not model_name:
+            continue
+        by_model.setdefault(model_name, []).append(float(row.get("score", 0.0)))
+
+    return {
+        model_name: _average_float(scores)
+        for model_name, scores in by_model.items()
+    }
+
+
+def _append_source_column_to_text_report(
+    existing_txt_path: Path,
+    *,
+    report_dir: Path,
+    source_name: str,
+) -> Path:
+    """Create an additive TXT report variant with one extra source column.
+
+    This function never overwrites the original TXT report. It always writes to
+    a derived filename based on the original report stem with a fixed suffix
+    (for example ``overall_benchmark_report_source_augmented.txt``) so
+    historical reports stay intact.
+    """
+    project_root_real = os.path.realpath(str(PROJECT_ROOT.resolve()))
+    existing_path_real = os.path.realpath(str(existing_txt_path))
+    try:
+        inside_project = (
+            os.path.commonpath([project_root_real, existing_path_real])
+            == project_root_real
+        )
+    except ValueError:
+        inside_project = False
+    if not inside_project:
+        raise ValueError(
+            "existing text report path must stay inside the project directory: "
+            f"{existing_path_real}"
+        )
+    safe_existing_txt_path = Path(existing_path_real)
+    if not safe_existing_txt_path.exists():
+        raise FileNotFoundError(safe_existing_txt_path)
+
+    existing_content = safe_existing_txt_path.read_text(encoding="utf-8")
+    lines = existing_content.splitlines()
+    lines = _with_source_column_added(
+        lines=lines,
+        report_dir=report_dir,
+        source_name=source_name,
+    )
+    return _write_derived_text_report(
+        report_dir=safe_existing_txt_path.parent,
+        content="\n".join(lines) + "\n",
+    )
+
+
+def _derived_text_report_path(
+    *,
+    report_dir: Path,
+) -> Path:
+    """Build a validated derived TXT path for additive report output."""
+    project_root_real = os.path.realpath(str(PROJECT_ROOT.resolve()))
+    base_dir_real = os.path.realpath(str(report_dir))
+    try:
+        base_inside_project = (
+            os.path.commonpath([project_root_real, base_dir_real]) == project_root_real
+        )
+    except ValueError:
+        base_inside_project = False
+    if not base_inside_project:
+        raise ValueError(
+            f"output directory must stay inside the project directory: "
+            f"{base_dir_real}"
+        )
+    derived_path_real = os.path.realpath(
+        str(Path(base_dir_real) / DERIVED_TEXT_REPORT_FILENAME)
+    )
+    try:
+        derived_inside_base = (
+            os.path.commonpath([base_dir_real, derived_path_real]) == base_dir_real
+        )
+    except ValueError:
+        derived_inside_base = False
+    if not derived_inside_base:
+        raise ValueError("Derived text report path escapes the output directory.")
+    return Path(derived_path_real)
+
+
+def _write_derived_text_report(
+    *,
+    report_dir: Path,
+    content: str,
+) -> Path:
+    """Write derived additive TXT output to a fixed safe report path."""
+    project_root_real = os.path.realpath(str(PROJECT_ROOT.resolve()))
+    base_dir_real = os.path.realpath(str(report_dir))
+    try:
+        base_inside_project = (
+            os.path.commonpath([project_root_real, base_dir_real]) == project_root_real
+        )
+    except ValueError:
+        base_inside_project = False
+    if not base_inside_project:
+        raise ValueError(
+            "output directory must stay inside the project directory: "
+            f"{base_dir_real}"
+        )
+
+    derived_path_real = os.path.realpath(
+        str(Path(base_dir_real) / DERIVED_TEXT_REPORT_FILENAME)
+    )
+    try:
+        derived_inside_base = (
+            os.path.commonpath([base_dir_real, derived_path_real]) == base_dir_real
+        )
+    except ValueError:
+        derived_inside_base = False
+    if not derived_inside_base:
+        raise ValueError("Derived text report path escapes the output directory.")
+
+    with Path(derived_path_real).open("w", encoding="utf-8") as report_file:
+        report_file.write(content)
+    return Path(derived_path_real)
+
+
+def _with_source_column_added(
+    *,
+    lines: list[str],
+    report_dir: Path,
+    source_name: str,
+) -> list[str]:
+    """Add a source-specific column to report text lines."""
+    source_model_scores = _average_scores_by_model_for_source(report_dir, source_name)
+
+    if not lines:
+        return [f"Model | {source_name}"]
+    if not _has_full_report_sections(lines):
+        return _append_source_column_to_simple_lines(
+            lines,
+            source_name,
+            source_model_scores=source_model_scores,
+        )
+
+    return _append_source_column_to_full_report(
+        lines=lines,
+        source_name=source_name,
+        source_model_scores=source_model_scores,
+    )
+
+
+def _append_source_column_to_simple_lines(
+    lines: list[str],
+    source_name: str,
+    *,
+    source_model_scores: dict[str, float],
+) -> list[str]:
+    """Fallback strategy for legacy/plain one-table text output."""
+    updated_lines = list(lines)
+    header = updated_lines[0]
+    if source_name not in header:
+        updated_lines[0] = f"{header} | {source_name}"
+    for index in range(1, len(updated_lines)):
+        if "|" in updated_lines[index] and updated_lines[index].strip():
+            row_cells = _table_cells(updated_lines[index])
+            model_name = row_cells[0] if row_cells else updated_lines[index].split("|")[0].strip()
+            score = source_model_scores.get(model_name)
+            score_value = f"{score:.4f}" if score is not None else ""
+            updated_lines[index] = f"{updated_lines[index]} | {score_value}"
+    return updated_lines
+
+
+def _append_source_column_to_full_report(
+    *,
+    lines: list[str],
+    source_name: str,
+    source_model_scores: dict[str, float],
+) -> list[str]:
+    """Add source column for sectioned benchmark reports."""
+    updated_lines = _add_column_to_section_table(
+        lines,
+        section_title=MODEL_SUMMARY_TITLE,
+        column_name=source_name,
+        value_by_row=lambda cells: _model_summary_source_score(
+            row_cells=cells,
+            source_model_scores=source_model_scores,
+        ),
+    )
+    return _add_column_to_section_table(
+        updated_lines,
+        section_title=OVERALL_WINNERS_TITLE,
+        column_name=source_name,
+        value_by_row=lambda cells: _overall_winner_source_score(
+            row_cells=cells,
+            source_model_scores=source_model_scores,
+        ),
+    )
+
+
+def _model_summary_source_score(
+    *,
+    row_cells: list[str],
+    source_model_scores: dict[str, float],
+) -> str:
+    """Compute source-column value for one Model Summary row."""
+    if not row_cells:
+        return ""
+    model_name = row_cells[0]
+    score = source_model_scores.get(model_name)
+    if score is None:
+        return ""
+    return f"{score:.4f}"
+
+
+def _overall_winner_source_score(
+    *,
+    row_cells: list[str],
+    source_model_scores: dict[str, float],
+) -> str:
+    """Compute source-column value for one Overall Winners row."""
+    if not row_cells:
+        return ""
+    category = row_cells[0]
+    if category == OVERALL_WINNER_FASTEST_LABEL:
+        return ""
+    if len(row_cells) <= 1:
+        return ""
+
+    winner_model = row_cells[1]
+    winner_score = source_model_scores.get(winner_model)
+    if winner_score is None:
+        return ""
+    return f"{winner_score:.4f}"
+
+
+def _add_column_to_section_table(
+    lines: list[str],
+    *,
+    section_title: str,
+    column_name: str,
+    value_by_row: Callable[[list[str]], str],
+) -> list[str]:
+    """Add one column to a section table and re-render it for clean alignment."""
+    section_index = _find_line_index(lines, section_title)
+    if section_index is None:
+        return lines
+
+    table_start = _find_table_border_line(lines, section_index + 1)
+    if table_start is None or table_start + 2 >= len(lines):
+        return lines
+
+    header_cells = _table_cells(lines[table_start + 1])
+    if not header_cells:
+        return lines
+
+    headers = list(header_cells)
+    if column_name in headers:
+        column_index = headers.index(column_name)
+    else:
+        headers.append(column_name)
+        column_index = len(headers) - 1
+
+    row_start = table_start + 3
+    table_end = _find_table_border_line(lines, row_start)
+    if table_end is None:
+        return lines
+
+    rows: list[list[str]] = []
+    for raw_line in lines[row_start:table_end]:
+        cells = _table_cells(raw_line)
+        if not cells:
+            continue
+        row_cells = list(cells)
+        while len(row_cells) < len(headers):
+            row_cells.append("")
+        row_cells[column_index] = str(value_by_row(cells))
+        rows.append(row_cells[: len(headers)])
+
+    rendered = _format_table(headers, rows).splitlines()
+    return [*lines[:table_start], *rendered, *lines[table_end + 1 :]]
+
+
+def _find_line_index(lines: list[str], target: str) -> int | None:
+    for index, line in enumerate(lines):
+        if line.strip() == target:
+            return index
+    return None
+
+
+def _find_table_border_line(lines: list[str], start: int) -> int | None:
+    for index in range(start, len(lines)):
+        if lines[index].strip().startswith("+-"):
+            return index
+    return None
+
+
+def _table_cells(line: str) -> list[str]:
+    stripped = line.strip()
+    if not stripped.startswith("|"):
+        return []
+    return [cell.strip() for cell in stripped.strip("|").split("|")]
+
+
+def _model_and_source_from_report_filename(
+    path: Path,
+) -> tuple[str, str] | None:
+    """Extract model and source name from benchmark-report CSV filename."""
+    parts = path.stem.split("__")
+    if len(parts) < 2:
+        return None
+    return parts[0], parts[1]
+
+
+def _is_completed_row_with_output(row: dict[str, Any]) -> bool:
+    """Check whether one row should be included in source-score aggregation."""
+    return row.get("status") == REPORT_COMPLETED_STATUS and bool(
+        str(row.get("llm_output", "")).strip()
+    )
+
+
+def _has_full_report_sections(lines: list[str]) -> bool:
+    """Return whether the text report contains both key table sections."""
+    return all(
+        any(section in line for line in lines)
+        for section in REPORT_SECTIONS_WITH_TABLES
+    )
 
 
 def _merge_overall_rows(
@@ -1099,7 +1520,7 @@ def _write_overall_text_report(
         if overall_rows is not None
         else _overall_winner_rows(batch_results)
     )
-    lines.extend(["", "Overall Winners", "---------------"])
+    lines.extend(["", OVERALL_WINNERS_TITLE, "---------------"])
     if winner_rows:
         best_average_row, fastest_row = winner_rows
         lines.append(
@@ -1498,7 +1919,7 @@ def _print_batch_summary(
     if winner_rows:
         best_average_row, fastest_row = winner_rows
         print("")
-        print("Overall Winners")
+        print(OVERALL_WINNERS_TITLE)
         print("---------------")
         print(
             "Best average score: "
