@@ -3,12 +3,30 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, TypedDict
+
+
+class CategorySummary(TypedDict):
+    """Per-scope aggregation payload for category accuracy reporting."""
+
+    ground_truth_count: int
+    exact_match_count: int
+    partial_score_sum: float
+    error_count: int
+    exact_accuracy_percent: float
+    partial_accuracy_percent: float
+
+
+class CategoryAccuracyReport(TypedDict):
+    """Top-level category accuracy report payload."""
+
+    overall: CategorySummary
+    by_category: dict[str, CategorySummary]
 
 
 def calculate_category_accuracy_report(
     evaluations: list[dict[str, Any]],
-) -> dict[str, Any]:
+) -> CategoryAccuracyReport:
     """Aggregate exact and partial accuracy percentages by category.
 
     Args:
@@ -18,38 +36,27 @@ def calculate_category_accuracy_report(
     Returns:
         JSON-serializable dictionary with ``overall`` and ``by_category`` keys.
     """
-    by_category: dict[str, dict[str, Any]] = {}
+    by_category: dict[str, CategorySummary] = {}
     overall = _new_summary()
 
     for evaluation in evaluations:
-        category = str(evaluation.get("category", "uncategorized"))
-        ground_truth = evaluation.get("ground_truth")
-        llm_output = evaluation.get("llm_output", "")
-
-        if not isinstance(ground_truth, dict):
-            ground_truth = {}
-
-        parsed_output, parse_error = _parse_json_object(llm_output)
+        category = _normalize_category(evaluation.get("category"))
+        ground_truth = _normalize_ground_truth(evaluation.get("ground_truth"))
+        parsed_output, parse_error = _parse_json_object(evaluation.get("llm_output", ""))
 
         category_summary = by_category.setdefault(category, _new_summary())
-
-        if parse_error:
-            category_summary["error_count"] += 1
-            overall["error_count"] += 1
-
-        if not ground_truth:
-            continue
-
-        category_summary["ground_truth_count"] += 1
-        overall["ground_truth_count"] += 1
-
-        if parsed_output == ground_truth:
-            category_summary["exact_match_count"] += 1
-            overall["exact_match_count"] += 1
-
-        partial_score = _partial_score(parsed_output, ground_truth)
-        category_summary["partial_score_sum"] += partial_score
-        overall["partial_score_sum"] += partial_score
+        _accumulate_evaluation(
+            summary=category_summary,
+            parsed_output=parsed_output,
+            ground_truth=ground_truth,
+            parse_error=parse_error,
+        )
+        _accumulate_evaluation(
+            summary=overall,
+            parsed_output=parsed_output,
+            ground_truth=ground_truth,
+            parse_error=parse_error,
+        )
 
     _finalize_summary(overall)
     for summary in by_category.values():
@@ -59,6 +66,20 @@ def calculate_category_accuracy_report(
         "overall": overall,
         "by_category": by_category,
     }
+
+
+def _normalize_category(value: Any) -> str:
+    """Normalize category names, falling back to ``uncategorized``."""
+    if value in {None, ""}:
+        return "uncategorized"
+    return str(value)
+
+
+def _normalize_ground_truth(value: Any) -> dict[str, Any]:
+    """Normalize ground truth payload to dictionary form."""
+    if isinstance(value, dict):
+        return value
+    return {}
 
 
 def _parse_json_object(value: Any) -> tuple[dict[str, Any], bool]:
@@ -83,6 +104,26 @@ def _parse_json_object(value: Any) -> tuple[dict[str, Any], bool]:
     return parsed, False
 
 
+def _accumulate_evaluation(
+    *,
+    summary: CategorySummary,
+    parsed_output: dict[str, Any],
+    ground_truth: dict[str, Any],
+    parse_error: bool,
+) -> None:
+    """Accumulate one parsed evaluation into a mutable summary bucket."""
+    if parse_error:
+        summary["error_count"] += 1
+
+    if not ground_truth:
+        return
+
+    summary["ground_truth_count"] += 1
+    if parsed_output == ground_truth:
+        summary["exact_match_count"] += 1
+    summary["partial_score_sum"] += _partial_score(parsed_output, ground_truth)
+
+
 def _partial_score(
     parsed_output: dict[str, Any],
     ground_truth: dict[str, Any],
@@ -104,7 +145,7 @@ def _partial_score(
     return matches / denominator
 
 
-def _new_summary() -> dict[str, Any]:
+def _new_summary() -> CategorySummary:
     """Create a mutable summary accumulator."""
     return {
         "ground_truth_count": 0,
@@ -116,7 +157,7 @@ def _new_summary() -> dict[str, Any]:
     }
 
 
-def _finalize_summary(summary: dict[str, Any]) -> None:
+def _finalize_summary(summary: CategorySummary) -> None:
     """Finalize percentage fields with zero-division safety."""
     denominator = int(summary["ground_truth_count"])
     if denominator == 0:

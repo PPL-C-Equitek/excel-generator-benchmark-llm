@@ -173,6 +173,36 @@ def test_safe_output_path_rejects_paths_that_escape_base_dir(
         main_module._safe_output_path(output_dir, "evil.json")
 
 
+def test_next_available_output_path_returns_preferred_when_not_exists(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+
+    path = main_module._next_available_output_path(
+        tmp_path,
+        "overall_benchmark_report.csv",
+    )
+
+    assert path == tmp_path / "overall_benchmark_report.csv"
+
+
+def test_next_available_output_path_skips_existing_suffixes(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "overall_benchmark_report.csv").write_text("", encoding="utf-8")
+    (tmp_path / "overall_benchmark_report_1.csv").write_text("", encoding="utf-8")
+
+    path = main_module._next_available_output_path(
+        tmp_path,
+        "overall_benchmark_report.csv",
+    )
+
+    assert path == tmp_path / "overall_benchmark_report_2.csv"
+
+
 def test_main_runs_configured_models_and_example_dirs(
     tmp_path,
     monkeypatch,
@@ -734,6 +764,30 @@ def test_write_overall_report_with_merge_falls_back_when_base_missing(
     assert merged_path == report_dir / "overall_benchmark_report.csv"
 
 
+def test_write_overall_report_with_merge_preserves_existing_path_when_enabled(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    report_dir = tmp_path / "reports"
+    report_dir.mkdir()
+    base_overall_path = tmp_path / "base_overall.csv"
+    base_overall_path.write_text(
+        ",".join(main_module.OVERALL_REPORT_FIELDNAMES) + "\n",
+        encoding="utf-8-sig",
+    )
+    (report_dir / "overall_benchmark_report.csv").write_text("", encoding="utf-8")
+
+    merged_path = main_module._write_overall_report_with_merge(
+        batch_results=[],
+        report_dir=report_dir,
+        base_overall_report_path=base_overall_path,
+        preserve_existing=True,
+    )
+
+    assert merged_path == report_dir / "overall_benchmark_report_1.csv"
+
+
 def test_merge_model_summary_rows_keeps_base_when_new_missing():
     base_rows = {
         "model-a": {
@@ -893,6 +947,25 @@ def test_overall_row_extractors_handle_missing_sections():
     assert main_module._winner_rows_from_overall_rows(None) == []
 
 
+def test_read_benchmark_report_rows_handles_non_dict_json_payload(tmp_path, monkeypatch):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    report_path = tmp_path / "benchmark.csv"
+    report_path.write_text(
+        "\n".join(
+            [
+                "row_index,status,score,llm_output,error_message",
+                '1,completed,1.0,"[""a""]",',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    rows = main_module._read_benchmark_report_rows(report_path)
+
+    assert rows[0]["parsed_llm_output"] == {}
+
+
 def test_overall_helpers_handle_empty_inputs(capsys, tmp_path):
     assert main_module._overall_winner_rows([]) == []
     assert main_module._average_float([]) == 0.0
@@ -905,3 +978,28 @@ def test_overall_helpers_handle_empty_inputs(capsys, tmp_path):
     captured = capsys.readouterr()
 
     assert "No supported benchmark cases were found." in captured.out
+
+
+def test_print_batch_summary_handles_no_winner_rows(capsys, monkeypatch, tmp_path):
+    monkeypatch.setattr(main_module, "_overall_winner_rows", lambda _results: [])
+    batch_results = [
+        {
+            "model": "model-a",
+            "case_id": "file-1",
+            "status": "completed",
+            "average_score": 0.9,
+            "elapsed_seconds": 5.0,
+            "total_rows": 1,
+            "successful_evaluations": 1,
+        }
+    ]
+
+    main_module._print_batch_summary(
+        batch_results,
+        tmp_path / "overall.csv",
+        tmp_path / "overall.txt",
+    )
+    captured = capsys.readouterr()
+
+    assert "Overall Winners" not in captured.out
+    assert "Overall report:" in captured.out

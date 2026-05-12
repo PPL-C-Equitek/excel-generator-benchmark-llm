@@ -10,6 +10,8 @@ from typing import Any
 
 from src.category_accuracy import calculate_category_accuracy_report
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 
 def main() -> int:
     """Generate category-accuracy JSON and TXT reports from saved artifacts."""
@@ -40,11 +42,17 @@ def generate_category_accuracy_reports(
     Returns:
         Metadata with output paths and evaluation count.
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
+    safe_report_dir = _ensure_project_child(report_dir, "report directory")
+    safe_runtime_dir = _ensure_project_child(
+        runtime_dir,
+        "runtime dataset directory",
+    )
+    safe_output_dir = _ensure_project_child(output_dir, "output directory")
+    safe_output_dir.mkdir(parents=True, exist_ok=True)
 
     evaluations = _collect_evaluations(
-        report_dir=report_dir,
-        runtime_dir=runtime_dir,
+        report_dir=safe_report_dir,
+        runtime_dir=safe_runtime_dir,
         source_filter=source_filter,
         model_filter=model_filter,
     )
@@ -53,8 +61,8 @@ def generate_category_accuracy_reports(
     by_source = _group_summary(evaluations, "source")
 
     suffix = _suffix_from_filters(source_filter, model_filter)
-    json_path = output_dir / f"category_accuracy_report{suffix}.json"
-    txt_path = output_dir / f"category_accuracy_report{suffix}.txt"
+    json_path = safe_output_dir / f"category_accuracy_report{suffix}.json"
+    txt_path = safe_output_dir / f"category_accuracy_report{suffix}.txt"
     final_payload = {
         **report,
         "by_model": by_model,
@@ -78,6 +86,28 @@ def generate_category_accuracy_reports(
         "txt_path": txt_path,
         "total_evaluations": len(evaluations),
     }
+
+
+def _ensure_project_child(path: Path, label: str) -> Path:
+    """Validate that a path is inside ``PROJECT_ROOT``.
+
+    Args:
+        path: Candidate path (relative or absolute).
+        label: Human-readable label for error messaging.
+
+    Returns:
+        Resolved path guaranteed to be within ``PROJECT_ROOT``.
+
+    Raises:
+        ValueError: If the resolved path escapes ``PROJECT_ROOT``.
+    """
+    project_root = PROJECT_ROOT.resolve()
+    resolved_path = path.resolve()
+    if not resolved_path.is_relative_to(project_root):
+        raise ValueError(
+            f"{label} must stay inside the project directory: {resolved_path}"
+        )
+    return resolved_path
 
 
 def _parse_args() -> argparse.Namespace:
@@ -172,7 +202,14 @@ def _parse_report_filename(stem: str) -> tuple[str, str] | None:
 
 
 def _read_ground_truth(runtime_path: Path) -> dict[str, Any]:
-    payload = json.loads(runtime_path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(runtime_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+
+    if not isinstance(payload, dict):
+        return {}
+
     rows = payload.get("rows", [])
     if not rows:
         return {}

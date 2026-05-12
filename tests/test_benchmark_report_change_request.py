@@ -211,6 +211,40 @@ def test_simple_fallback_adds_source_score_values_when_available():
     assert updated[2].endswith("| ")
 
 
+def test_simple_fallback_does_not_duplicate_existing_source_column():
+    lines = [
+        "Model | synthetic_examples | synthetic_examples_lanjutan",
+        "model-a | 0.50",
+    ]
+
+    updated = main_module._append_source_column_to_simple_lines(
+        lines,
+        "synthetic_examples_lanjutan",
+        source_model_scores={"model-a": 0.75},
+    )
+
+    assert updated[0] == lines[0]
+
+
+def test_simple_fallback_skips_blank_or_non_pipe_lines():
+    lines = [
+        "Model | synthetic_examples",
+        "",
+        "not-a-row",
+        "model-a | 0.50",
+    ]
+
+    updated = main_module._append_source_column_to_simple_lines(
+        lines,
+        "synthetic_examples_lanjutan",
+        source_model_scores={"model-a": 0.75},
+    )
+
+    assert updated[1] == ""
+    assert updated[2] == "not-a-row"
+    assert updated[3].endswith("| 0.7500")
+
+
 def test_project_path_returns_absolute_path_unchanged():
     absolute_path = Path.cwd().resolve()
 
