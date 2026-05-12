@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import re
 
-import pytest
-
 import src.recommendation_improvements as recommendation_module
 
 

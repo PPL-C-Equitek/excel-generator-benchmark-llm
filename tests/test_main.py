@@ -481,6 +481,16 @@ def test_append_recommendations_returns_when_text_report_write_fails(
     assert txt_path.read_text(encoding="utf-8") == original_text
 
 
+def test_append_recommendations_rejects_paths_outside_project(tmp_path, monkeypatch):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path / "repo")
+
+    with pytest.raises(ValueError, match="project directory"):
+        main_module._append_recommendations_to_category_text_report(
+            category_json_path=Path("D:/outside/category_accuracy_report.json"),
+            category_txt_path=Path("D:/outside/category_accuracy_report.txt"),
+        )
+
+
 def test_extract_category_scores_for_recommendation_returns_empty_for_non_dict_input():
     assert (
         main_module._extract_category_scores_for_recommendation(

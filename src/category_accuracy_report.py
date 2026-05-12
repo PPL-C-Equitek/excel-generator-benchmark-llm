@@ -280,11 +280,23 @@ def _extract_category(ground_truth: dict[str, Any]) -> str:
     raw_filename = document_info.get("filename", "")
     if isinstance(raw_filename, str) and raw_filename.strip():
         suffix = Path(raw_filename).suffix.lower().lstrip(".")
+        suffix = _safe_category_label(suffix)
         if suffix:
             return suffix
 
     source_type = document_info.get("source_type", "unknown")
-    return str(source_type)
+    return _safe_source_type(source_type)
+
+
+def _safe_category_label(value: str) -> str:
+    """Normalize category labels from filename extension."""
+    return "".join(char for char in value if char.isalnum() or char in {"-", "_"})
+
+
+def _safe_source_type(value: Any) -> str:
+    """Normalize fallback source type labels safely."""
+    output = str(value).strip()
+    return output or "unknown"
 
 
 def _suffix_from_filters(source: str, model: str) -> str:

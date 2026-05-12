@@ -264,8 +264,17 @@ def _append_recommendations_to_category_text_report(
     category_txt_path: Path,
 ) -> None:
     """Append recommendation improvements section to category TXT report."""
+    safe_json_path = _ensure_project_child(
+        category_json_path,
+        "category accuracy json path",
+    )
+    safe_txt_path = _ensure_project_child(
+        category_txt_path,
+        "category accuracy txt path",
+    )
+
     try:
-        payload = json.loads(category_json_path.read_text(encoding="utf-8"))
+        payload = json.loads(safe_json_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return
 
@@ -279,13 +288,13 @@ def _append_recommendations_to_category_text_report(
     )
 
     try:
-        existing_text = category_txt_path.read_text(encoding="utf-8")
+        existing_text = safe_txt_path.read_text(encoding="utf-8")
     except OSError:
         return
 
     separator = "\n" if existing_text.endswith("\n") else "\n\n"
     try:
-        category_txt_path.write_text(
+        safe_txt_path.write_text(
             f"{existing_text}{separator}{recommendation_text}",
             encoding="utf-8",
         )

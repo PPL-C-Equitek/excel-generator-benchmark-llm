@@ -423,6 +423,24 @@ def test_extract_category_prefers_filename_extension_when_available():
     ) == "txt"
 
 
+def test_extract_category_sanitizes_filename_extension_and_source_type():
+    assert report_module._extract_category(
+        {
+            "document_info": {
+                "source_type": "  ",
+                "filename": "sample.bad!ext",
+            }
+        }
+    ) == "badext"
+    assert report_module._extract_category(
+        {
+            "document_info": {
+                "source_type": "   ",
+            }
+        }
+    ) == "unknown"
+
+
 def test_suffix_and_safe_label_cover_empty_and_sanitized_cases():
     assert report_module._suffix_from_filters("", "") == ""
     assert report_module._suffix_from_filters("source a", "") == "_source_a"
