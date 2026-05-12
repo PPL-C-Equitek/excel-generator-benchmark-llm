@@ -1,73 +1,117 @@
-"""Generate recommendation improvements from category accuracy scores."""
+"""Generate recommendation text from category accuracy scores."""
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable, Mapping
+from typing import TypeAlias
 
 
 DEFAULT_THRESHOLD = 0.70
+REPORT_TITLE = "Recommendation Improvements"
+REPORT_UNDERLINE = "==========================="
 MAX_PERFORMANCE_MESSAGE = (
     "Performa maksimal tercapai, tidak ada rekomendasi mendesak."
 )
+NO_DATA_MESSAGE = "- No category score data available."
+NO_LOW_SCORE_MESSAGE = "- Tidak ada kategori di bawah threshold."
+ANALYSIS_UNAVAILABLE_MESSAGE = (
+    "Default recommendation digunakan karena analisis tidak tersedia "
+    "(gagal/timeout)."
+)
+
+AnalyzerFn: TypeAlias = Callable[[str, float], str]
+RankedCategory: TypeAlias = tuple[str, float]
 
 
 def generate_recommendation_improvements(
     *,
-    category_scores: dict[str, float],
+    category_scores: Mapping[str, float],
     threshold: float = DEFAULT_THRESHOLD,
-    analyzer: Callable[[str, float], str] | None = None,
+    analyzer: AnalyzerFn | None = None,
 ) -> str:
-    """Build recommendation text block for categories below threshold."""
-    lines = ["Recommendation Improvements", "==========================="]
+    """Build a printable recommendation block for low-accuracy categories.
+
+    Args:
+        category_scores: Category-to-accuracy mapping in 0..1 scale.
+        threshold: Minimum acceptable score (default ``0.70``).
+        analyzer: Optional custom analyzer callable used to build each
+            recommendation line.
+
+    Returns:
+        Multiline text block that can be printed or appended to report files.
+    """
+    report_lines: list[str] = [REPORT_TITLE, REPORT_UNDERLINE]
+    effective_threshold = float(threshold)
 
     if not category_scores:
-        lines.append("- No category score data available.")
-        return "\n".join(lines) + "\n"
+        report_lines.append(NO_DATA_MESSAGE)
+        return _render_report(report_lines)
 
     if _all_max_performance(category_scores):
-        lines.extend(["", MAX_PERFORMANCE_MESSAGE])
-        return "\n".join(lines) + "\n"
+        report_lines.extend(["", MAX_PERFORMANCE_MESSAGE])
+        return _render_report(report_lines)
 
-    low_scores = [
-        (category, float(score))
-        for category, score in category_scores.items()
-        if float(score) < float(threshold)
-    ]
+    ranked_low_scores = _rank_categories_below_threshold(
+        category_scores=category_scores,
+        threshold=effective_threshold,
+    )
 
-    if not low_scores:
-        lines.extend(["", "- Tidak ada kategori di bawah threshold."])
-        return "\n".join(lines) + "\n"
+    if not ranked_low_scores:
+        report_lines.extend(["", NO_LOW_SCORE_MESSAGE])
+        return _render_report(report_lines)
 
-    low_scores.sort(key=lambda item: (item[1], item[0]))
-    analyzer_fn = analyzer or _default_analyzer
+    analyzer_fn = analyzer or _build_default_analyzer(effective_threshold)
 
     try:
-        lines.append("")
-        for category, score in low_scores:
+        report_lines.append("")
+        for category, score in ranked_low_scores:
             recommendation = analyzer_fn(category, score)
-            lines.append(f"- {category}: {recommendation}")
+            report_lines.append(f"- {category}: {recommendation}")
+    except (TimeoutError, RuntimeError, ValueError):
+        report_lines.extend(["", ANALYSIS_UNAVAILABLE_MESSAGE])
     except Exception:
-        lines.extend(
-            [
-                "",
-                (
-                    "Default recommendation digunakan karena analisis tidak tersedia "
-                    "(gagal/timeout)."
-                ),
-            ]
-        )
+        report_lines.extend(["", ANALYSIS_UNAVAILABLE_MESSAGE])
 
-    return "\n".join(lines) + "\n"
+    return _render_report(report_lines)
 
 
-def _all_max_performance(category_scores: dict[str, float]) -> bool:
+def _all_max_performance(category_scores: Mapping[str, float]) -> bool:
+    """Return ``True`` when all category scores are perfect (>= 1.0)."""
     return all(float(score) >= 1.0 for score in category_scores.values())
 
 
-def _default_analyzer(category: str, score: float) -> str:
-    gap = max(0.0, DEFAULT_THRESHOLD - float(score))
-    return (
-        f"Fokus validasi field inti pada kategori ini dan tambah sampel latihan; "
-        f"skor saat ini {score:.2f} (gap {gap:.2f} dari target)."
-    )
+def _rank_categories_below_threshold(
+    *,
+    category_scores: Mapping[str, float],
+    threshold: float,
+) -> list[RankedCategory]:
+    """Filter and sort low-score categories deterministically.
 
+    Sorting rule: score ascending, then category name alphabetically.
+    """
+    low_score_items: list[RankedCategory] = [
+        (category_name, float(category_score))
+        for category_name, category_score in category_scores.items()
+        if float(category_score) < threshold
+    ]
+    low_score_items.sort(key=lambda item: (item[1], item[0]))
+    return low_score_items
+
+
+def _build_default_analyzer(threshold: float) -> AnalyzerFn:
+    """Build a default analyzer bound to the effective threshold."""
+
+    def _default_analyzer(category_name: str, category_score: float) -> str:
+        gap_to_target = max(0.0, threshold - float(category_score))
+        return (
+            "Fokus validasi field inti pada kategori ini dan tambah sampel "
+            f"latihan; skor saat ini {category_score:.2f} "
+            f"(gap {gap_to_target:.2f} dari target)."
+        )
+
+    return _default_analyzer
+
+
+def _render_report(lines: list[str]) -> str:
+    """Render report lines as newline-terminated text."""
+    return "\n".join(lines) + "\n"

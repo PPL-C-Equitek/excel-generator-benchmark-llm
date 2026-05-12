@@ -320,6 +320,189 @@ def test_main_passes_preserve_flag_when_enabled(
     print_summary.assert_called_once()
 
 
+def test_extract_category_scores_for_recommendation_normalizes_percent_values():
+    payload = {
+        "by_category": {
+            "invoice": {"exact_accuracy_percent": 62.5},
+            "receipt": {"exact_accuracy_percent": 1.0},
+            "invalid": {"exact_accuracy_percent": "abc"},
+        }
+    }
+
+    result = main_module._extract_category_scores_for_recommendation(payload)
+
+    assert result == {
+        "invoice": pytest.approx(0.625),
+        "receipt": pytest.approx(1.0),
+    }
+
+
+def test_write_category_accuracy_reports_appends_recommendations_to_txt(
+    tmp_path,
+    monkeypatch,
+    mocker,
+):
+    monkeypatch.setattr(main_module, "PROJECT_ROOT", tmp_path)
+    report_dir = tmp_path / "reports"
+    runtime_dataset_dir = tmp_path / "runtime"
+    report_dir.mkdir()
+    runtime_dataset_dir.mkdir()
+
+    json_path = report_dir / "category_accuracy_report.json"
+    txt_path = report_dir / "category_accuracy_report.txt"
+    json_path.write_text(
+        json.dumps(
+            {
+                "by_category": {
+                    "invoice": {"exact_accuracy_percent": 50.0},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    txt_path.write_text("Category Accuracy Report\n", encoding="utf-8")
+
+    mocker.patch(
+        "src.main.generate_category_accuracy_reports",
+        return_value={
+            "json_path": json_path,
+            "txt_path": txt_path,
+            "total_evaluations": 1,
+        },
+    )
+    mocker.patch(
+        "src.main.generate_recommendation_improvements",
+        return_value=(
+            "Recommendation Improvements\n"
+            "===========================\n"
+            "- invoice: Improve extraction checks.\n"
+        ),
+    )
+
+    result_paths = main_module._write_category_accuracy_reports(
+        report_dir=report_dir,
+        runtime_dataset_dir=runtime_dataset_dir,
+    )
+
+    assert result_paths["json_path"] == json_path
+    assert result_paths["txt_path"] == txt_path
+    report_text = txt_path.read_text(encoding="utf-8")
+    assert "Category Accuracy Report" in report_text
+    assert "Recommendation Improvements" in report_text
+    assert "- invoice: Improve extraction checks." in report_text
+
+
+def test_append_recommendations_returns_when_json_file_cannot_be_read(
+    tmp_path,
+):
+    missing_json = tmp_path / "missing_category_accuracy_report.json"
+    txt_path = tmp_path / "category_accuracy_report.txt"
+    txt_path.write_text("Category Accuracy Report\n", encoding="utf-8")
+
+    main_module._append_recommendations_to_category_text_report(
+        category_json_path=missing_json,
+        category_txt_path=txt_path,
+    )
+
+    assert txt_path.read_text(encoding="utf-8") == "Category Accuracy Report\n"
+
+
+def test_append_recommendations_returns_when_payload_is_not_dict(tmp_path):
+    json_path = tmp_path / "category_accuracy_report.json"
+    txt_path = tmp_path / "category_accuracy_report.txt"
+    json_path.write_text('["not-an-object"]', encoding="utf-8")
+    txt_path.write_text("Category Accuracy Report\n", encoding="utf-8")
+
+    main_module._append_recommendations_to_category_text_report(
+        category_json_path=json_path,
+        category_txt_path=txt_path,
+    )
+
+    assert txt_path.read_text(encoding="utf-8") == "Category Accuracy Report\n"
+
+
+def test_append_recommendations_returns_when_text_report_cannot_be_read(
+    tmp_path,
+):
+    json_path = tmp_path / "category_accuracy_report.json"
+    missing_txt_path = tmp_path / "missing_category_accuracy_report.txt"
+    json_path.write_text(
+        json.dumps(
+            {
+                "by_category": {
+                    "invoice": {"exact_accuracy_percent": 20.0},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    main_module._append_recommendations_to_category_text_report(
+        category_json_path=json_path,
+        category_txt_path=missing_txt_path,
+    )
+
+    assert not missing_txt_path.exists()
+
+
+def test_append_recommendations_returns_when_text_report_write_fails(
+    tmp_path,
+    monkeypatch,
+):
+    json_path = tmp_path / "category_accuracy_report.json"
+    txt_path = tmp_path / "category_accuracy_report.txt"
+    json_path.write_text(
+        json.dumps(
+            {
+                "by_category": {
+                    "invoice": {"exact_accuracy_percent": 20.0},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    txt_path.write_text("Category Accuracy Report\n", encoding="utf-8")
+    original_text = txt_path.read_text(encoding="utf-8")
+
+    original_write_text = Path.write_text
+
+    def failing_write_text(self: Path, data: str, encoding: str | None = None) -> int:
+        if self == txt_path:
+            raise OSError("disk full")
+        return original_write_text(self, data, encoding=encoding)
+
+    monkeypatch.setattr(Path, "write_text", failing_write_text)
+
+    main_module._append_recommendations_to_category_text_report(
+        category_json_path=json_path,
+        category_txt_path=txt_path,
+    )
+
+    assert txt_path.read_text(encoding="utf-8") == original_text
+
+
+def test_extract_category_scores_for_recommendation_returns_empty_for_non_dict_input():
+    assert (
+        main_module._extract_category_scores_for_recommendation(
+            {"by_category": ["bad"]}
+        )
+        == {}
+    )
+
+
+def test_extract_category_scores_for_recommendation_skips_non_dict_summary_items():
+    payload = {
+        "by_category": {
+            "invoice": {"exact_accuracy_percent": 75.0},
+            "bad": "not-dict",
+        }
+    }
+
+    result = main_module._extract_category_scores_for_recommendation(payload)
+
+    assert result == {"invoice": pytest.approx(0.75)}
+
+
 def test_run_batch_continues_when_single_case_preprocess_fails(
     tmp_path,
     monkeypatch,

@@ -28,6 +28,9 @@ from src.data_extractor import (  # noqa: E402
 from src.category_accuracy_report import (  # noqa: E402
     generate_category_accuracy_reports,
 )
+from src.recommendation_improvements import (  # noqa: E402
+    generate_recommendation_improvements,
+)
 from src.runner import BenchmarkRunner  # noqa: E402
 
 
@@ -243,10 +246,76 @@ def _write_category_accuracy_reports(
         runtime_dir=runtime_dataset_dir,
         output_dir=report_dir,
     )
+    json_path = Path(result["json_path"])
+    txt_path = Path(result["txt_path"])
+    _append_recommendations_to_category_text_report(
+        category_json_path=json_path,
+        category_txt_path=txt_path,
+    )
     return {
-        "json_path": Path(result["json_path"]),
-        "txt_path": Path(result["txt_path"]),
+        "json_path": json_path,
+        "txt_path": txt_path,
     }
+
+
+def _append_recommendations_to_category_text_report(
+    *,
+    category_json_path: Path,
+    category_txt_path: Path,
+) -> None:
+    """Append recommendation improvements section to category TXT report."""
+    try:
+        payload = json.loads(category_json_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return
+
+    if not isinstance(payload, dict):
+        return
+
+    category_scores = _extract_category_scores_for_recommendation(payload)
+    recommendation_text = generate_recommendation_improvements(
+        category_scores=category_scores,
+        threshold=0.70,
+    )
+
+    try:
+        existing_text = category_txt_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+
+    separator = "\n" if existing_text.endswith("\n") else "\n\n"
+    try:
+        category_txt_path.write_text(
+            f"{existing_text}{separator}{recommendation_text}",
+            encoding="utf-8",
+        )
+    except OSError:
+        return
+
+
+def _extract_category_scores_for_recommendation(
+    report_payload: dict[str, Any],
+) -> dict[str, float]:
+    """Extract 0..1 category exact-accuracy scores from report payload."""
+    raw_by_category = report_payload.get("by_category")
+    if not isinstance(raw_by_category, dict):
+        return {}
+
+    category_scores: dict[str, float] = {}
+    for category_name, summary in raw_by_category.items():
+        if not isinstance(summary, dict):
+            continue
+        raw_percent = summary.get("exact_accuracy_percent", 0.0)
+        try:
+            percent_value = float(raw_percent)
+        except (TypeError, ValueError):
+            continue
+        normalized_score = (
+            percent_value / 100.0 if percent_value > 1.0 else percent_value
+        )
+        category_scores[str(category_name)] = max(0.0, min(1.0, normalized_score))
+
+    return category_scores
 
 
 def _model_names_from_env() -> list[str]:

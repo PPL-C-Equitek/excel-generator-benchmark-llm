@@ -266,9 +266,23 @@ def _read_ground_truth(runtime_path: Path) -> dict[str, Any]:
 
 
 def _extract_category(ground_truth: dict[str, Any]) -> str:
+    """Extract category label from runtime expected output metadata.
+
+    Priority:
+    1. ``document_info.filename`` extension (for example ``png``, ``csv``, ``txt``).
+    2. ``document_info.source_type`` legacy value (for example ``PDF``/``Excel``).
+    3. ``unknown``.
+    """
     document_info = ground_truth.get("document_info")
     if not isinstance(document_info, dict):
         return "unknown"
+
+    raw_filename = document_info.get("filename", "")
+    if isinstance(raw_filename, str) and raw_filename.strip():
+        suffix = Path(raw_filename).suffix.lower().lstrip(".")
+        if suffix:
+            return suffix
+
     source_type = document_info.get("source_type", "unknown")
     return str(source_type)
 
