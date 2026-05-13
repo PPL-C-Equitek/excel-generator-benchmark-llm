@@ -219,19 +219,22 @@ def _completed_rows_to_evaluations(
 ) -> list[dict[str, Any]]:
     """Convert completed CSV rows into evaluation payload dictionaries."""
     evaluations: list[dict[str, Any]] = []
-    with report_path.open("r", newline="", encoding="utf-8") as csv_file:
-        for row in csv.DictReader(csv_file):
-            if row.get("status") != "completed":
-                continue
-            evaluations.append(
-                {
-                    "category": category,
-                    "model": model_name,
-                    "source": source_name,
-                    "ground_truth": ground_truth,
-                    "llm_output": row.get("llm_output", ""),
-                }
-            )
+    try:
+        with report_path.open("r", newline="", encoding="utf-8") as csv_file:
+            for row in csv.DictReader(csv_file):
+                if row.get("status") != "completed":
+                    continue
+                evaluations.append(
+                    {
+                        "category": category,
+                        "model": model_name,
+                        "source": source_name,
+                        "ground_truth": ground_truth,
+                        "llm_output": row.get("llm_output", ""),
+                    }
+                )
+    except (OSError, csv.Error):
+        return []
     return evaluations
 
 
@@ -266,11 +269,37 @@ def _read_ground_truth(runtime_path: Path) -> dict[str, Any]:
 
 
 def _extract_category(ground_truth: dict[str, Any]) -> str:
+    """Extract category label from runtime expected output metadata.
+
+    Priority:
+    1. ``document_info.filename`` extension (for example ``png``, ``csv``, ``txt``).
+    2. ``document_info.source_type`` legacy value (for example ``PDF``/``Excel``).
+    3. ``unknown``.
+    """
     document_info = ground_truth.get("document_info")
     if not isinstance(document_info, dict):
         return "unknown"
+
+    raw_filename = document_info.get("filename", "")
+    if isinstance(raw_filename, str) and raw_filename.strip():
+        suffix = Path(raw_filename).suffix.lower().lstrip(".")
+        suffix = _safe_category_label(suffix)
+        if suffix:
+            return suffix
+
     source_type = document_info.get("source_type", "unknown")
-    return str(source_type)
+    return _safe_source_type(source_type)
+
+
+def _safe_category_label(value: str) -> str:
+    """Normalize category labels from filename extension."""
+    return "".join(char for char in value if char.isalnum() or char in {"-", "_"})
+
+
+def _safe_source_type(value: Any) -> str:
+    """Normalize fallback source type labels safely."""
+    output = str(value).strip()
+    return output or "unknown"
 
 
 def _suffix_from_filters(source: str, model: str) -> str:
