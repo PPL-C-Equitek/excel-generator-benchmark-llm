@@ -44,6 +44,21 @@ def test_extract_text_from_file_extracts_docx_paragraphs_and_tables(tmp_path):
     ]
 
 
+def test_extract_text_from_file_docx_skips_empty_table_rows(tmp_path):
+    docx_path = tmp_path / "sample_empty_rows.docx"
+    document = Document()
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = ""
+    table.cell(0, 1).text = ""
+    table.cell(1, 0).text = "Budget"
+    table.cell(1, 1).text = "100"
+    document.save(docx_path)
+
+    extracted_text = extract_text_from_file(docx_path)
+
+    assert extracted_text.splitlines() == ["Budget\t100"]
+
+
 def test_extract_text_from_file_extracts_pdf_with_pdfplumber(tmp_path, mocker):
     pdf_path = tmp_path / "sample.pdf"
     pdf_path.write_bytes(b"%PDF mocked bytes")
@@ -344,6 +359,49 @@ def _write_minimal_xlsx_without_shared_strings(path: Path) -> None:
         )
 
 
+def _write_minimal_xlsx_with_whitespace_only_row(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as workbook:
+        workbook.writestr(
+            "xl/workbook.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+              <sheets>
+                <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
+              </sheets>
+            </workbook>""",
+        )
+        workbook.writestr(
+            "xl/_rels/workbook.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1"
+                Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
+                Target="worksheets/sheet1.xml"/>
+            </Relationships>""",
+        )
+        workbook.writestr(
+            "xl/worksheets/sheet1.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+              <sheetData>
+                <row r="1">
+                  <c r="A1" t="inlineStr"><is><t>   </t></is></c>
+                </row>
+              </sheetData>
+            </worksheet>""",
+        )
+
+
+def test_extract_text_from_file_xlsx_skips_whitespace_only_rows(tmp_path):
+    workbook_path = tmp_path / "whitespace_only.xlsx"
+    _write_minimal_xlsx_with_whitespace_only_row(workbook_path)
+
+    extracted_text = extract_text_from_file(workbook_path)
+
+    assert extracted_text.splitlines() == ["SHEET: Sheet1"]
+
+
 @pytest.mark.parametrize(
     ("cell_reference", "expected_index"),
     [("A1", 1), ("Z9", 26), ("AA12", 27), ("BC99", 55)],
@@ -471,3 +529,60 @@ def test_configure_tesseract_binary_uses_windows_candidate_when_available(
     data_extractor._configure_tesseract_binary()
 
     assert fake_pytesseract.pytesseract.tesseract_cmd == str(candidate_binary)
+
+
+def test_configure_tesseract_binary_checks_multiple_candidates_until_found(
+    monkeypatch,
+    tmp_path,
+):
+    first_missing = tmp_path / "missing_tesseract.exe"
+    second_existing = tmp_path / "tesseract.exe"
+    second_existing.write_text("", encoding="utf-8")
+    fake_pytesseract = type(
+        "FakePytesseract",
+        (),
+        {"pytesseract": type("Inner", (), {"tesseract_cmd": ""})()},
+    )()
+    monkeypatch.setattr(data_extractor, "pytesseract", fake_pytesseract)
+    monkeypatch.setattr(
+        data_extractor,
+        "shutil",
+        type("S", (), {"which": staticmethod(lambda _: None)})(),
+    )
+    monkeypatch.setattr(
+        data_extractor,
+        "WINDOWS_TESSERACT_CANDIDATES",
+        (first_missing, second_existing),
+    )
+    monkeypatch.delenv("TESSERACT_CMD", raising=False)
+
+    data_extractor._configure_tesseract_binary()
+
+    assert fake_pytesseract.pytesseract.tesseract_cmd == str(second_existing)
+
+
+def test_configure_tesseract_binary_keeps_existing_value_when_no_candidate_found(
+    monkeypatch,
+    tmp_path,
+):
+    fake_pytesseract = type(
+        "FakePytesseract",
+        (),
+        {"pytesseract": type("Inner", (), {"tesseract_cmd": "keep"})()},
+    )()
+    monkeypatch.setattr(data_extractor, "pytesseract", fake_pytesseract)
+    monkeypatch.setattr(
+        data_extractor,
+        "shutil",
+        type("S", (), {"which": staticmethod(lambda _: None)})(),
+    )
+    monkeypatch.setattr(
+        data_extractor,
+        "WINDOWS_TESSERACT_CANDIDATES",
+        (tmp_path / "not_found_1.exe", tmp_path / "not_found_2.exe"),
+    )
+    monkeypatch.delenv("TESSERACT_CMD", raising=False)
+
+    data_extractor._configure_tesseract_binary()
+
+    assert fake_pytesseract.pytesseract.tesseract_cmd == "keep"

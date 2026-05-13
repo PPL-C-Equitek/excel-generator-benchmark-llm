@@ -55,5 +55,5 @@ synthetic.examples.lanjutan/
 !.env.example
 *__pycache__/
 .ruff*
-benchmark_reports/
-benchmark_runtime_datasets/
+benchmark_reports*
+benchmark_runtime_datasets*

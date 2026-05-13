@@ -25,6 +25,9 @@ from src.data_extractor import (  # noqa: E402
     SUPPORTED_FILE_EXTENSIONS,
     extract_text_from_file,
 )
+from src.category_accuracy_report import (  # noqa: E402
+    generate_category_accuracy_reports,
+)
 from src.runner import BenchmarkRunner  # noqa: E402
 
 
@@ -44,6 +47,7 @@ DEFAULT_REPORT_DIR = "benchmark_reports"
 DEFAULT_RUNTIME_DATASET_DIR = "benchmark_runtime_datasets"
 OVERALL_REPORT_FILENAME = "overall_benchmark_report.csv"
 OVERALL_TEXT_REPORT_FILENAME = "overall_benchmark_report.txt"
+PRESERVE_OVERALL_REPORTS_ENV = "PRESERVE_OVERALL_REPORTS"
 CSV_ENCODING = "utf-8-sig"
 JSON_ENCODING = "utf-8"
 SUPPORTED_INPUT_EXTENSIONS = SUPPORTED_FILE_EXTENSIONS
@@ -143,6 +147,9 @@ def main() -> int:
         EXAMPLE_DIRS: Optional comma-separated example folders.
         REPORT_DIR: Optional destination folder for per-run CSV reports.
         BENCHMARK_DATASET_DIR: Optional folder for generated runtime datasets.
+        PRESERVE_OVERALL_REPORTS: Optional boolean-like flag. When enabled,
+            overall CSV/TXT reports use non-overwriting filename suffixes such
+            as ``overall_benchmark_report_1.csv`` when base filenames exist.
 
     Returns:
         Process exit code. ``0`` means the batch runner completed.
@@ -153,6 +160,7 @@ def main() -> int:
     example_dirs = _example_dirs_from_env()
     input_extensions = _input_extensions_from_env()
     merge_base_overall_report = _merge_base_overall_report_from_env()
+    preserve_overall_reports = _preserve_overall_reports_from_env()
     data_dir = _project_path(DEFAULT_DATA_DIR)
     report_dir = _project_output_path_from_env("REPORT_DIR", DEFAULT_REPORT_DIR)
     runtime_dataset_dir = _project_output_path_from_env(
@@ -192,25 +200,53 @@ def main() -> int:
         runtime_dataset_dir=runtime_dataset_dir,
     )
     if merge_base_overall_report is None:
-        overall_report_path = _write_overall_report(batch_results, report_dir)
+        overall_report_path = _write_overall_report(
+            batch_results,
+            report_dir,
+            preserve_existing=preserve_overall_reports,
+        )
     else:
         overall_report_path = _write_overall_report_with_merge(
             batch_results,
             report_dir,
             merge_base_overall_report,
+            preserve_existing=preserve_overall_reports,
         )
     overall_text_report_path = _write_overall_text_report(
         batch_results,
         report_dir,
         overall_report_path=overall_report_path,
+        preserve_existing=preserve_overall_reports,
+    )
+    category_accuracy_paths = _write_category_accuracy_reports(
+        report_dir=report_dir,
+        runtime_dataset_dir=runtime_dataset_dir,
     )
     _print_batch_summary(
         batch_results,
         overall_report_path,
         overall_text_report_path,
+        category_accuracy_paths,
     )
 
     return 0
+
+
+def _write_category_accuracy_reports(
+    *,
+    report_dir: Path,
+    runtime_dataset_dir: Path,
+) -> dict[str, Path]:
+    """Write category-accuracy JSON and TXT reports from existing artifacts."""
+    result = generate_category_accuracy_reports(
+        report_dir=report_dir,
+        runtime_dir=runtime_dataset_dir,
+        output_dir=report_dir,
+    )
+    return {
+        "json_path": Path(result["json_path"]),
+        "txt_path": Path(result["txt_path"]),
+    }
 
 
 def _model_names_from_env() -> list[str]:
@@ -270,6 +306,12 @@ def _merge_base_overall_report_from_env() -> Path | None:
         _project_path(raw_path),
         "MERGE_BASE_OVERALL_REPORT",
     )
+
+
+def _preserve_overall_reports_from_env() -> bool:
+    """Read the optional overall-report preservation flag from env."""
+    raw_value = os.getenv(PRESERVE_OVERALL_REPORTS_ENV, "")
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _example_dirs_from_env() -> list[Path]:
@@ -661,6 +703,32 @@ def _safe_output_path(base_dir: Path, filename: str) -> Path:
     return candidate
 
 
+def _next_available_output_path(base_dir: Path, filename: str) -> Path:
+    """Resolve a non-overwriting output path inside ``base_dir``.
+
+    Args:
+        base_dir: Controlled output directory.
+        filename: Preferred filename.
+
+    Returns:
+        Preferred output path when it does not exist, otherwise a suffixed
+        variant such as ``name_1.ext``.
+    """
+    preferred_path = _safe_output_path(base_dir, filename)
+    if not preferred_path.exists():
+        return preferred_path
+
+    stem = preferred_path.stem
+    suffix = preferred_path.suffix
+    index = 1
+    while True:
+        candidate_name = f"{stem}_{index}{suffix}"
+        candidate_path = _safe_output_path(base_dir, candidate_name)
+        if not candidate_path.exists():
+            return candidate_path
+        index += 1
+
+
 def _read_ground_truth_rows(path: Path) -> list[dict[str, Any]]:
     """Read normalized ground-truth rows from a CSV file.
 
@@ -786,6 +854,8 @@ def _write_runtime_dataset(
 def _write_overall_report(
     batch_results: list[dict[str, Any]],
     report_dir: Path,
+    *,
+    preserve_existing: bool = False,
 ) -> Path:
     """Write the overall benchmark comparison report.
 
@@ -799,7 +869,13 @@ def _write_overall_report(
     Returns:
         Path to the written aggregate CSV report.
     """
-    report_path = _safe_output_path(report_dir, OVERALL_REPORT_FILENAME)
+    if preserve_existing:
+        report_path = _next_available_output_path(
+            report_dir,
+            OVERALL_REPORT_FILENAME,
+        )
+    else:
+        report_path = _safe_output_path(report_dir, OVERALL_REPORT_FILENAME)
     rows = [
         *_case_comparison_rows(batch_results),
         *_model_summary_rows(batch_results),
@@ -818,6 +894,8 @@ def _write_overall_report_with_merge(
     batch_results: list[dict[str, Any]],
     report_dir: Path,
     base_overall_report_path: Path,
+    *,
+    preserve_existing: bool = False,
 ) -> Path:
     """Write an overall report merged with a previous aggregate report.
 
@@ -829,13 +907,23 @@ def _write_overall_report_with_merge(
     Returns:
         Path to the merged overall report.
     """
-    report_path = _safe_output_path(report_dir, OVERALL_REPORT_FILENAME)
+    if preserve_existing:
+        report_path = _next_available_output_path(
+            report_dir,
+            OVERALL_REPORT_FILENAME,
+        )
+    else:
+        report_path = _safe_output_path(report_dir, OVERALL_REPORT_FILENAME)
     if not base_overall_report_path.exists():
         print(
             "warning: merge base overall report was not found, "
             "writing a fresh aggregate report."
         )
-        return _write_overall_report(batch_results, report_dir)
+        return _write_overall_report(
+            batch_results,
+            report_dir,
+            preserve_existing=preserve_existing,
+        )
 
     base_rows = _read_overall_report_rows(base_overall_report_path)
     rows = _merge_overall_rows(base_rows, batch_results)
@@ -1406,6 +1494,7 @@ def _write_overall_text_report(
     report_dir: Path,
     *,
     overall_report_path: Path | None = None,
+    preserve_existing: bool = False,
 ) -> Path:
     """Write a human-readable text report with summary tables.
 
@@ -1416,7 +1505,13 @@ def _write_overall_text_report(
     Returns:
         Path to the written text report.
     """
-    report_path = _safe_output_path(report_dir, OVERALL_TEXT_REPORT_FILENAME)
+    if preserve_existing:
+        report_path = _next_available_output_path(
+            report_dir,
+            OVERALL_TEXT_REPORT_FILENAME,
+        )
+    else:
+        report_path = _safe_output_path(report_dir, OVERALL_TEXT_REPORT_FILENAME)
     lines = [
         "LLM Benchmark Report",
         "====================",
@@ -1892,6 +1987,7 @@ def _print_batch_summary(
     batch_results: list[dict[str, Any]],
     overall_report_path: Path,
     overall_text_report_path: Path,
+    category_accuracy_paths: dict[str, Path] | None = None,
 ) -> None:
     """Print a readable summary table for batch results.
 
@@ -1935,6 +2031,9 @@ def _print_batch_summary(
     print("")
     print(f"Overall report: {overall_report_path}")
     print(f"Text report   : {overall_text_report_path}")
+    if category_accuracy_paths:
+        print(f"Category JSON : {category_accuracy_paths['json_path']}")
+        print(f"Category TXT  : {category_accuracy_paths['txt_path']}")
 
 
 if __name__ == "__main__":  # pragma: no cover
