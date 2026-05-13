@@ -172,3 +172,28 @@ def test_generate_recommendations_returns_default_message_for_unexpected_excepti
 
     assert "Recommendation Improvements" in result
     assert "Default recommendation digunakan" in result
+
+
+def test_generate_recommendations_does_not_mix_partial_and_fallback_on_mid_loop_failure():
+    category_scores = {
+        "alpha": 0.50,
+        "beta": 0.55,
+        "gamma": 0.60,
+    }
+    call_count = {"value": 0}
+
+    def analyzer_fails_on_third(category: str, score: float) -> str:
+        call_count["value"] += 1
+        if call_count["value"] == 3:
+            raise RuntimeError(f"Analyzer failed at {category}: {score}")
+        return f"Improve {category}"
+
+    result = recommendation_module.generate_recommendation_improvements(
+        category_scores=category_scores,
+        threshold=0.70,
+        analyzer=analyzer_fails_on_third,
+    )
+
+    assert "Default recommendation digunakan" in result
+    assert "- alpha: Improve alpha" not in result
+    assert "- beta: Improve beta" not in result

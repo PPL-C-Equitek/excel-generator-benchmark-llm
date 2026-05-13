@@ -61,13 +61,16 @@ def generate_recommendation_improvements(
 
     analyzer_fn = analyzer or _build_default_analyzer(effective_threshold)
 
+    buffered_recommendation_lines: list[str] = []
     try:
-        report_lines.append("")
         for category, score in ranked_low_scores:
             recommendation = analyzer_fn(category, score)
-            report_lines.append(f"- {category}: {recommendation}")
+            buffered_recommendation_lines.append(f"- {category}: {recommendation}")
     except Exception:
         report_lines.extend(["", ANALYSIS_UNAVAILABLE_MESSAGE])
+    else:
+        report_lines.append("")
+        report_lines.extend(buffered_recommendation_lines)
 
     return _render_report(report_lines)
 
