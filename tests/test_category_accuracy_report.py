@@ -27,6 +27,13 @@ def _write_report_csv(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
+def _section_lines(report_text: str, section_title: str, next_section_title: str) -> list[str]:
+    lines = report_text.splitlines()
+    start_index = lines.index(section_title) + 2
+    end_index = lines.index(next_section_title)
+    return lines[start_index:end_index]
+
+
 def test_generate_category_accuracy_reports_writes_json_and_txt(tmp_path):
     report_dir = tmp_path / "reports"
     runtime_dir = tmp_path / "runtime"
@@ -516,7 +523,10 @@ def test_format_text_report_shows_no_data_available_for_empty_category_dict():
         total_evaluations=0,
     )
 
-    assert "No data available" in text
+    by_category_lines = _section_lines(text, "By Category", "By Model")
+    assert by_category_lines == ["- No data available"]
+    assert "- No category data found." not in by_category_lines
+    assert "- No category data found." not in text
 
 
 def test_format_text_report_shows_no_data_available_for_null_like_category_input():
@@ -525,7 +535,10 @@ def test_format_text_report_shows_no_data_available_for_null_like_category_input
         total_evaluations=0,
     )
 
-    assert "No data available" in text
+    by_category_lines = _section_lines(text, "By Category", "By Model")
+    assert by_category_lines == ["- No data available"]
+    assert "- No category data found." not in by_category_lines
+    assert "- No category data found." not in text
 
 
 def test_format_text_report_keeps_structure_with_long_category_name():
