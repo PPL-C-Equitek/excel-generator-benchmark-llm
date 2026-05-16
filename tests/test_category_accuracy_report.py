@@ -473,33 +473,129 @@ def test_group_summary_returns_empty_for_no_evaluations():
     assert report_module._group_summary([], "model") == {}
 
 
-def test_format_text_report_handles_empty_and_non_empty_sections():
-    empty_text = report_module._format_text_report(
-        {"overall": {}, "by_category": {}, "by_model": {}, "by_source": {}},
-        total_evaluations=0,
-    )
-    assert "No category data found." in empty_text
-    assert "No model data found." in empty_text
-    assert "No source data found." in empty_text
-
+def test_format_text_report_renders_category_labels_and_decimal_percentages():
     text = report_module._format_text_report(
         {
             "overall": {
-                "ground_truth_count": 1,
+                "ground_truth_count": 8,
+                "exact_match_count": 5,
+                "error_count": 0,
+                "exact_accuracy_percent": 62.5,
+                "partial_accuracy_percent": 75.0,
+            },
+            "by_category": {
+                "Invoice": {
+                    "ground_truth_count": 8,
+                    "exact_match_count": 5,
+                    "error_count": 0,
+                    "exact_accuracy_percent": 62.5,
+                    "partial_accuracy_percent": 75.0,
+                },
+                "Receipt": {
+                    "ground_truth_count": 2,
+                    "exact_match_count": 1,
+                    "error_count": 0,
+                    "exact_accuracy_percent": 50.0,
+                    "partial_accuracy_percent": 50.0,
+                },
+            },
+            "by_model": {},
+            "by_source": {},
+        },
+        total_evaluations=10,
+    )
+
+    assert "Invoice" in text
+    assert "Receipt" in text
+    assert "62.50%" in text
+
+
+def test_format_text_report_shows_no_data_available_for_empty_category_dict():
+    text = report_module._format_text_report(
+        {"overall": {}, "by_category": {}, "by_model": {}, "by_source": {}},
+        total_evaluations=0,
+    )
+
+    assert "No data available" in text
+
+
+def test_format_text_report_shows_no_data_available_for_null_like_category_input():
+    text = report_module._format_text_report(
+        {"overall": {}, "by_category": None, "by_model": {}, "by_source": {}},
+        total_evaluations=0,
+    )
+
+    assert "No data available" in text
+
+
+def test_format_text_report_keeps_structure_with_long_category_name():
+    long_category_name = "category_name_with_more_than_fifty_characters_for_visual_check_01"
+    text = report_module._format_text_report(
+        {
+            "overall": {
+                "ground_truth_count": 3,
                 "exact_match_count": 1,
                 "error_count": 0,
-                "exact_accuracy_percent": 100.0,
-                "partial_accuracy_percent": 100.0,
+                "exact_accuracy_percent": 33.33,
+                "partial_accuracy_percent": 66.67,
             },
-            "by_category": {"Excel": {"ground_truth_count": 1}},
+            "by_category": {
+                long_category_name: {
+                    "ground_truth_count": 3,
+                    "exact_match_count": 1,
+                    "error_count": 0,
+                    "exact_accuracy_percent": 33.33,
+                    "partial_accuracy_percent": 66.67,
+                }
+            },
             "by_model": {"model-a": {"ground_truth_count": 1}},
             "by_source": {"source-x": {"ground_truth_count": 1}},
         },
-        total_evaluations=1,
+        total_evaluations=3,
     )
-    assert "Excel" in text
-    assert "model-a" in text
-    assert "source-x" in text
+
+    assert long_category_name in text
+    assert "exact_accuracy_pct   : 33.33%" in text
+    assert "By Model" in text
+    assert "By Source" in text
+
+
+def test_format_text_report_renders_extreme_percentages_for_categories():
+    text = report_module._format_text_report(
+        {
+            "overall": {
+                "ground_truth_count": 2,
+                "exact_match_count": 1,
+                "error_count": 0,
+                "exact_accuracy_percent": 50.0,
+                "partial_accuracy_percent": 50.0,
+            },
+            "by_category": {
+                "ZeroCase": {
+                    "ground_truth_count": 1,
+                    "exact_match_count": 0,
+                    "error_count": 0,
+                    "exact_accuracy_percent": 0.0,
+                    "partial_accuracy_percent": 0.0,
+                },
+                "FullCase": {
+                    "ground_truth_count": 1,
+                    "exact_match_count": 1,
+                    "error_count": 0,
+                    "exact_accuracy_percent": 100.0,
+                    "partial_accuracy_percent": 100.0,
+                },
+            },
+            "by_model": {},
+            "by_source": {},
+        },
+        total_evaluations=2,
+    )
+
+    assert "ZeroCase" in text
+    assert "FullCase" in text
+    assert "0.00%" in text
+    assert "100.00%" in text
 
 
 def test_append_summary_block_handles_empty_and_data():
