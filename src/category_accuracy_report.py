@@ -359,7 +359,7 @@ def _format_text_report(report: dict[str, Any], *, total_evaluations: int) -> st
 
     by_category = report.get("by_category", {})
     if not isinstance(by_category, dict) or not by_category:
-        lines.append("- No category data found.")
+        lines.append("- No data available")
     else:
         for category_name in sorted(by_category):
             summary = by_category[category_name]
