@@ -8,14 +8,9 @@ import shutil
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any
-from xml.etree import ElementTree
 
+from defusedxml import ElementTree
 from docx import Document
-
-try:
-    from defusedxml import ElementTree as _SafeElementTree
-except ImportError:  # pragma: no cover
-    _SafeElementTree = ElementTree
 
 
 class _MissingPdfPlumber:
@@ -431,4 +426,4 @@ def _safe_xml_from_bytes(raw_xml: bytes) -> ElementTree.Element:
     upper_raw_xml = raw_xml.upper()
     if any(token in upper_raw_xml for token in DISALLOWED_XML_TOKENS):
         raise ValueError("Unsafe XML declaration found in XLSX content.")
-    return _SafeElementTree.fromstring(raw_xml)
+    return ElementTree.fromstring(raw_xml)
