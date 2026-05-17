@@ -11,6 +11,8 @@ from typing import Any
 from src.category_accuracy import calculate_category_accuracy_report
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+EMPTY_CATEGORY_MESSAGE = "- No data available"
+NO_DATA_BY_FIELD_TEMPLATE = "- No {title_field} data found."
 
 
 def main() -> int:
@@ -359,21 +361,10 @@ def _format_text_report(report: dict[str, Any], *, total_evaluations: int) -> st
 
     by_category = report.get("by_category", {})
     if not isinstance(by_category, dict) or not by_category:
-        lines.append("- No category data found.")
+        lines.append(EMPTY_CATEGORY_MESSAGE)
     else:
         for category_name in sorted(by_category):
-            summary = by_category[category_name]
-            lines.extend(
-                [
-                    f"{category_name}",
-                    f"  ground_truth_count   : {int(summary.get('ground_truth_count', 0))}",
-                    f"  exact_match_count    : {int(summary.get('exact_match_count', 0))}",
-                    f"  error_count          : {int(summary.get('error_count', 0))}",
-                    f"  exact_accuracy_pct   : {float(summary.get('exact_accuracy_percent', 0.0)):.2f}%",
-                    f"  partial_accuracy_pct : {float(summary.get('partial_accuracy_percent', 0.0)):.2f}%",
-                    "",
-                ]
-            )
+            _append_summary_lines(lines, category_name, by_category[category_name])
 
     lines.extend(["By Model", "--------"])
     _append_summary_block(lines, report.get("by_model"), title_field="model")
@@ -390,22 +381,25 @@ def _append_summary_block(
     title_field: str,
 ) -> None:
     if not isinstance(raw_data, dict) or not raw_data:
-        lines.append(f"- No {title_field} data found.")
+        lines.append(NO_DATA_BY_FIELD_TEMPLATE.format(title_field=title_field))
         return
 
     for name in sorted(raw_data):
-        summary = raw_data[name]
-        lines.extend(
-            [
-                f"{name}",
-                f"  ground_truth_count   : {int(summary.get('ground_truth_count', 0))}",
-                f"  exact_match_count    : {int(summary.get('exact_match_count', 0))}",
-                f"  error_count          : {int(summary.get('error_count', 0))}",
-                f"  exact_accuracy_pct   : {float(summary.get('exact_accuracy_percent', 0.0)):.2f}%",
-                f"  partial_accuracy_pct : {float(summary.get('partial_accuracy_percent', 0.0)):.2f}%",
-                "",
-            ]
-        )
+        _append_summary_lines(lines, name, raw_data[name])
+
+
+def _append_summary_lines(lines: list[str], name: str, summary: Any) -> None:
+    lines.extend(
+        [
+            f"{name}",
+            f"  ground_truth_count   : {int(summary.get('ground_truth_count', 0))}",
+            f"  exact_match_count    : {int(summary.get('exact_match_count', 0))}",
+            f"  error_count          : {int(summary.get('error_count', 0))}",
+            f"  exact_accuracy_pct   : {float(summary.get('exact_accuracy_percent', 0.0)):.2f}%",
+            f"  partial_accuracy_pct : {float(summary.get('partial_accuracy_percent', 0.0)):.2f}%",
+            "",
+        ]
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -27,6 +27,13 @@ def _write_report_csv(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
+def _section_lines(report_text: str, section_title: str, next_section_title: str) -> list[str]:
+    lines = report_text.splitlines()
+    start_index = lines.index(section_title) + 2
+    end_index = lines.index(next_section_title)
+    return lines[start_index:end_index]
+
+
 def test_generate_category_accuracy_reports_writes_json_and_txt(tmp_path):
     report_dir = tmp_path / "reports"
     runtime_dir = tmp_path / "runtime"
@@ -473,33 +480,135 @@ def test_group_summary_returns_empty_for_no_evaluations():
     assert report_module._group_summary([], "model") == {}
 
 
-def test_format_text_report_handles_empty_and_non_empty_sections():
-    empty_text = report_module._format_text_report(
-        {"overall": {}, "by_category": {}, "by_model": {}, "by_source": {}},
-        total_evaluations=0,
-    )
-    assert "No category data found." in empty_text
-    assert "No model data found." in empty_text
-    assert "No source data found." in empty_text
-
+def test_format_text_report_renders_category_labels_and_decimal_percentages():
     text = report_module._format_text_report(
         {
             "overall": {
-                "ground_truth_count": 1,
+                "ground_truth_count": 8,
+                "exact_match_count": 5,
+                "error_count": 0,
+                "exact_accuracy_percent": 62.5,
+                "partial_accuracy_percent": 75.0,
+            },
+            "by_category": {
+                "Invoice": {
+                    "ground_truth_count": 8,
+                    "exact_match_count": 5,
+                    "error_count": 0,
+                    "exact_accuracy_percent": 62.5,
+                    "partial_accuracy_percent": 75.0,
+                },
+                "Receipt": {
+                    "ground_truth_count": 2,
+                    "exact_match_count": 1,
+                    "error_count": 0,
+                    "exact_accuracy_percent": 50.0,
+                    "partial_accuracy_percent": 50.0,
+                },
+            },
+            "by_model": {},
+            "by_source": {},
+        },
+        total_evaluations=10,
+    )
+
+    assert "Invoice" in text
+    assert "Receipt" in text
+    assert "62.50%" in text
+
+
+def test_format_text_report_shows_no_data_available_for_empty_category_dict():
+    text = report_module._format_text_report(
+        {"overall": {}, "by_category": {}, "by_model": {}, "by_source": {}},
+        total_evaluations=0,
+    )
+
+    by_category_lines = _section_lines(text, "By Category", "By Model")
+    assert by_category_lines == ["- No data available"]
+    assert "- No category data found." not in by_category_lines
+    assert "- No category data found." not in text
+
+
+def test_format_text_report_shows_no_data_available_for_null_like_category_input():
+    text = report_module._format_text_report(
+        {"overall": {}, "by_category": None, "by_model": {}, "by_source": {}},
+        total_evaluations=0,
+    )
+
+    by_category_lines = _section_lines(text, "By Category", "By Model")
+    assert by_category_lines == ["- No data available"]
+    assert "- No category data found." not in by_category_lines
+    assert "- No category data found." not in text
+
+
+def test_format_text_report_keeps_structure_with_long_category_name():
+    long_category_name = "category_name_with_more_than_fifty_characters_for_visual_check_01"
+    text = report_module._format_text_report(
+        {
+            "overall": {
+                "ground_truth_count": 3,
                 "exact_match_count": 1,
                 "error_count": 0,
-                "exact_accuracy_percent": 100.0,
-                "partial_accuracy_percent": 100.0,
+                "exact_accuracy_percent": 33.33,
+                "partial_accuracy_percent": 66.67,
             },
-            "by_category": {"Excel": {"ground_truth_count": 1}},
+            "by_category": {
+                long_category_name: {
+                    "ground_truth_count": 3,
+                    "exact_match_count": 1,
+                    "error_count": 0,
+                    "exact_accuracy_percent": 33.33,
+                    "partial_accuracy_percent": 66.67,
+                }
+            },
             "by_model": {"model-a": {"ground_truth_count": 1}},
             "by_source": {"source-x": {"ground_truth_count": 1}},
         },
-        total_evaluations=1,
+        total_evaluations=3,
     )
-    assert "Excel" in text
-    assert "model-a" in text
-    assert "source-x" in text
+
+    assert long_category_name in text
+    assert "exact_accuracy_pct   : 33.33%" in text
+    assert "By Model" in text
+    assert "By Source" in text
+
+
+def test_format_text_report_renders_extreme_percentages_for_categories():
+    text = report_module._format_text_report(
+        {
+            "overall": {
+                "ground_truth_count": 2,
+                "exact_match_count": 1,
+                "error_count": 0,
+                "exact_accuracy_percent": 50.0,
+                "partial_accuracy_percent": 50.0,
+            },
+            "by_category": {
+                "ZeroCase": {
+                    "ground_truth_count": 1,
+                    "exact_match_count": 0,
+                    "error_count": 0,
+                    "exact_accuracy_percent": 0.0,
+                    "partial_accuracy_percent": 0.0,
+                },
+                "FullCase": {
+                    "ground_truth_count": 1,
+                    "exact_match_count": 1,
+                    "error_count": 0,
+                    "exact_accuracy_percent": 100.0,
+                    "partial_accuracy_percent": 100.0,
+                },
+            },
+            "by_model": {},
+            "by_source": {},
+        },
+        total_evaluations=2,
+    )
+
+    assert "ZeroCase" in text
+    assert "FullCase" in text
+    assert "0.00%" in text
+    assert "100.00%" in text
 
 
 def test_append_summary_block_handles_empty_and_data():
@@ -576,3 +685,59 @@ def test_generate_category_accuracy_reports_rejects_paths_outside_project(
             runtime_dir=outside,
             output_dir=outside,
         )
+
+
+def test_ensure_project_child_accepts_paths_inside_project(tmp_path, monkeypatch):
+    project_root = tmp_path / "repo"
+    child = project_root / "nested"
+    child.mkdir(parents=True)
+    monkeypatch.setattr(report_module, "PROJECT_ROOT", project_root)
+
+    resolved = report_module._ensure_project_child(child, "report directory")
+
+    assert resolved == child.resolve()
+
+
+def test_extract_category_falls_back_to_source_type_when_filename_suffix_is_invalid():
+    assert report_module._extract_category(
+        {
+            "document_info": {
+                "source_type": "PDF",
+                "filename": "report.!!!",
+            }
+        }
+    ) == "PDF"
+
+
+def test_safe_source_type_handles_non_string_values():
+    assert report_module._safe_source_type(123) == "123"
+    assert report_module._safe_source_type("   ") == "unknown"
+
+
+def test_append_summary_block_renders_in_sorted_order():
+    lines = []
+    report_module._append_summary_block(
+        lines,
+        {
+            "z-model": {
+                "ground_truth_count": 1,
+                "exact_match_count": 1,
+                "error_count": 0,
+                "exact_accuracy_percent": 100.0,
+                "partial_accuracy_percent": 100.0,
+            },
+            "a-model": {
+                "ground_truth_count": 1,
+                "exact_match_count": 0,
+                "error_count": 0,
+                "exact_accuracy_percent": 0.0,
+                "partial_accuracy_percent": 0.0,
+            },
+        },
+        title_field="model",
+    )
+
+    text = "\n".join(lines)
+    assert text.index("a-model") < text.index("z-model")
+    assert "0.00%" in text
+    assert "100.00%" in text
