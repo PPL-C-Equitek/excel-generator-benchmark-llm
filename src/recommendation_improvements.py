@@ -187,8 +187,6 @@ def _severity_tier(*, category_score: float, threshold: float) -> str:
     for severity_label, upper_bound in SEVERITY_THRESHOLDS:
         if score_value <= upper_bound:
             return severity_label
-    if score_value < float(threshold):
-        return SEVERITY_DEFAULT
     return SEVERITY_DEFAULT
 
 

@@ -741,4 +741,3 @@ def test_append_summary_block_renders_in_sorted_order():
     assert text.index("a-model") < text.index("z-model")
     assert "0.00%" in text
     assert "100.00%" in text
-    
