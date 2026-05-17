@@ -382,7 +382,6 @@ def test_severity_tier_returns_default_for_scores_at_or_above_threshold():
     assert (
         recommendation_module._severity_tier(
             category_score=0.80,
-            threshold=0.70,
         )
         == "low"
     )
@@ -391,20 +390,16 @@ def test_severity_tier_returns_default_for_scores_at_or_above_threshold():
 def test_severity_tier_handles_exact_boundaries():
     assert recommendation_module._severity_tier(
         category_score=0.10,
-        threshold=1.0,
     ) == "critical"
     assert recommendation_module._severity_tier(
         category_score=0.40,
-        threshold=1.0,
     ) == "high"
     assert recommendation_module._severity_tier(
         category_score=0.70,
-        threshold=1.0,
     ) == "medium"
 
 
 def test_severity_tier_returns_low_above_highest_tier_bound_and_below_threshold():
     assert recommendation_module._severity_tier(
         category_score=0.71,
-        threshold=1.0,
     ) == "low"

@@ -170,7 +170,7 @@ def _build_default_analyzer(threshold: float) -> AnalyzerFn:
     """Build the default analyzer bound to an effective threshold."""
 
     def _default_analyzer(category_name: str, category_score: float) -> str:
-        severity = _severity_tier(category_score=category_score, threshold=threshold)
+        severity = _severity_tier(category_score=category_score)
         action_text = _action_for_category(category_name)
         gap_to_target = max(0.0, threshold - float(category_score))
         return (
@@ -181,8 +181,8 @@ def _build_default_analyzer(threshold: float) -> AnalyzerFn:
     return _default_analyzer
 
 
-def _severity_tier(*, category_score: float, threshold: float) -> str:
-    """Return a severity tier label based on score bands and threshold."""
+def _severity_tier(*, category_score: float) -> str:
+    """Return a severity tier label based on score bands."""
     score_value = float(category_score)
     for severity_label, upper_bound in SEVERITY_THRESHOLDS:
         if score_value <= upper_bound:
