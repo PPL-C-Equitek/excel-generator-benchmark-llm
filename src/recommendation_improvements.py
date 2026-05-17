@@ -28,35 +28,66 @@ SEVERITY_THRESHOLDS = (
 )
 SEVERITY_DEFAULT = "low"
 
-CATEGORY_ACTIONS: dict[str, str] = {
-    "docx": (
-        "Run block-level OCR, audit multi-column table layout, and verify "
-        "vision parsing for headings and section boundaries"
+CATEGORY_POLICIES = (
+    (
+        ("docx",),
+        (
+            "Run block-level OCR, audit multi-column table layout, and verify "
+            "vision parsing for headings and section boundaries"
+        ),
     ),
-    "pdf": (
-        "Enable language-aware OCR, fix layout reading order, and validate "
-        "vision parsing on tables and footer regions"
+    (
+        ("pdf",),
+        (
+            "Enable language-aware OCR, fix layout reading order, and validate "
+            "vision parsing on tables and footer regions"
+        ),
     ),
-    "png": (
-        "Improve OCR image pre-processing, segment text layout regions, and "
-        "validate vision parsing on small fields"
+    (
+        ("png",),
+        (
+            "Improve OCR image pre-processing, segment text layout regions, and "
+            "validate vision parsing on small fields"
+        ),
     ),
-    "csv": (
-        "Normalize schema columns, standardize header aliases, and lock type "
-        "casting for numeric/date values during ingest"
+    (
+        ("csv",),
+        (
+            "Normalize schema columns, standardize header aliases, and lock type "
+            "casting for numeric/date values during ingest"
+        ),
     ),
-    "xlsx": (
-        "Normalize cross-sheet schema, clean merged-cell headers, and enforce "
-        "type normalization for formula and date cells"
+    (
+        ("xlsx",),
+        (
+            "Normalize cross-sheet schema, clean merged-cell headers, and enforce "
+            "type normalization for formula and date cells"
+        ),
     ),
-    "txt": (
-        "Set delimiter priority rules, extract explicit key-value pairs, and "
-        "prepare regex extraction for free-form text variations"
+    (
+        ("txt",),
+        (
+            "Set delimiter priority rules, extract explicit key-value pairs, and "
+            "prepare regex extraction for free-form text variations"
+        ),
     ),
-}
+)
 
 type AnalyzerFn = Callable[[str, float], str]
 type RankedCategory = tuple[str, float]
+type CategoryActionMap = dict[str, str]
+
+
+def _build_category_action_map() -> CategoryActionMap:
+    """Expand grouped category policies into a flat lookup map."""
+    action_map: CategoryActionMap = {}
+    for categories, action_text in CATEGORY_POLICIES:
+        for category in categories:
+            action_map[category] = action_text
+    return action_map
+
+
+CATEGORY_ACTIONS = _build_category_action_map()
 
 
 def generate_recommendation_improvements(
@@ -163,8 +194,13 @@ def _severity_tier(*, category_score: float, threshold: float) -> str:
 
 def _action_for_category(category_name: str) -> str:
     """Return category-specific action guidance, with generic fallback."""
-    normalized_name = str(category_name).strip().lower()
+    normalized_name = _normalize_category_name(category_name)
     return CATEGORY_ACTIONS.get(normalized_name, GENERIC_ACTION_MESSAGE)
+
+
+def _normalize_category_name(category_name: str) -> str:
+    """Normalize category keys to stable lowercase lookup form."""
+    return str(category_name).strip().lower()
 
 
 def _render_report(lines: list[str]) -> str:

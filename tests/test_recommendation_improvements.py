@@ -89,7 +89,7 @@ def test_generate_recommendations_returns_max_performance_message_when_all_categ
 
     assert isinstance(result, str)
     assert (
-        "Performa maksimal tercapai, tidak ada rekomendasi mendesak."
+        "Maximum performance reached, no urgent recommendation needed."
         in result
     )
 
@@ -133,7 +133,7 @@ def test_generate_recommendations_returns_info_when_no_category_below_threshold(
         threshold=0.70,
     )
 
-    assert "- Tidak ada kategori di bawah threshold." in result
+    assert "- No categories below threshold." in result
 
 
 def test_generate_recommendations_sorts_by_score_then_category_name():
@@ -162,7 +162,7 @@ def test_generate_recommendations_default_analyzer_uses_given_threshold_for_gap(
     )
 
     assert "- invoice:" in result
-    assert "gap 0.20 dari target" in result
+    assert "gap 0.20 from target" in result
 
 
 def test_generate_recommendations_returns_default_message_for_unexpected_exception():
@@ -178,7 +178,7 @@ def test_generate_recommendations_returns_default_message_for_unexpected_excepti
     )
 
     assert "Recommendation Improvements" in result
-    assert "Default recommendation digunakan" in result
+    assert "Default recommendation was used" in result
 
 
 def test_generate_recommendations_does_not_mix_partial_and_fallback_on_mid_loop_failure():
@@ -201,7 +201,7 @@ def test_generate_recommendations_does_not_mix_partial_and_fallback_on_mid_loop_
         analyzer=analyzer_fails_on_third,
     )
 
-    assert "Default recommendation digunakan" in result
+    assert "Default recommendation was used" in result
     assert "- alpha: Improve alpha" not in result
     assert "- beta: Improve beta" not in result
 
@@ -363,4 +363,26 @@ def test_generate_recommendations_benchmark_payload_has_non_copy_paste_category_
     assert any(
         keyword in lines["csv"]
         for keyword in ("schema", "header", "type", "normalize")
+    )
+
+
+def test_generate_recommendations_category_lookup_is_case_and_whitespace_tolerant():
+    category_scores = {" PDF ": 0.05}
+
+    result = recommendation_module.generate_recommendation_improvements(
+        category_scores=category_scores,
+        threshold=0.70,
+    )
+    line = _recommendation_line_for_category(result, " PDF ").lower()
+
+    assert any(keyword in line for keyword in ("ocr", "layout", "vision"))
+
+
+def test_severity_tier_returns_default_for_scores_at_or_above_threshold():
+    assert (
+        recommendation_module._severity_tier(
+            category_score=0.80,
+            threshold=0.70,
+        )
+        == "low"
     )
